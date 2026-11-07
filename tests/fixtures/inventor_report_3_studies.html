@@ -1,0 +1,1332 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8" />
+<title>Stress Analysis Report</title>
+<style type="text/css" media="all">
+body,p,table,th,td,h1,h2,h3,h4,h5,input{font-weight: normal; font-size: 10pt; font-family: Tahoma, Arial, Helvetica, sans-serif}
+body{color: #000000; background-color: #ffffff}
+h1{font-weight: bold; font-size: 180%; margin-bottom: 1em}
+h2{font-weight: bold; font-size: 150%; margin-bottom: 0.6em}
+h3{font-weight: bold; font-size: 125%; margin-bottom: 0.5em}
+h4{font-weight: bold; font-size: 115%; margin-bottom: 0.5em}
+h5{font-weight: bold; margin-bottom: 0.5em}
+p{margin: 0.5em 0em 0.3em 0em; line-height: 100%}
+blockquote{margin: 0em 0em 0em 1em; font-size: 100%; line-height: 100%; direction: ltr}
+.ta{border: dodgerblue 1px solid; border-collapse: collapse; background-color: #d9e6ff}
+.ta td,.ta th{border: dodgerblue 1px solid; padding: 2pt; valign: top}
+.collapsed{background: url("") left center no-repeat; display: block; padding: 0 0 0 14px; cursor: pointer}
+.expanded{background: url("") left center no-repeat; display: block; padding: 0 0 0 14px; cursor: pointer}
+img.p{cursor: pointer}
+img.z{width: 400px}
+</style>
+<style type="text/css" media="print">
+.unprinted{display: none}
+</style>
+ 
+</head>
+<body>
+<p class="unprinted">Image Width (pixels): <input type="button" value="320" onclick="zoom('320px')" />
+<input type="button" value="400" onclick="zoom('400px')" />
+<input type="button" value="640" onclick="zoom('640px')" />
+<input type="button" value="800" onclick="zoom('800px')" />
+<input type="button" value="1024" onclick="zoom('1024px')" />
+<input type="button" value="1280" onclick="zoom('1280px')" />
+<input type="button" value="Fit Width" onclick="zoom('100%')" />
+<input type="button" value="Original" onclick="zoom('640px')" /></p>
+<hr class="unprinted" /> 
+<h1>Stress Analysis Report</h1>
+<p style="text-align:right"></p> <table class="ta">
+	<tr>
+		<td>Analyzed File:</td>
+		<td></td>
+	</tr>
+	<tr>
+		<td>Autodesk Inventor Version:</td>
+		<td>2027.1 (Build 311270010, 270A)</td>
+	</tr>
+	<tr>
+		<td>Creation Date:</td>
+		<td>7/11/2026, 11:30 PM</td>
+	</tr>
+	<tr>
+		<td>Study Author:</td>
+		<td>user</td>
+	</tr>
+	<tr>
+		<td>Summary:</td>
+		<td></td>
+	</tr> 
+</table>
+<hr />
+<h2 class="expanded">Static Analysis:1</h2>
+<blockquote>
+	<p><b>General objective and settings:</b></p>
+	<table class="ta">
+		<tr>
+			<td>Design Objective</td>
+			<td>Single Point</td>
+		</tr>
+		<tr>
+			<td>Study Type</td>
+			<td>Static Analysis</td>
+		</tr>
+		<tr>
+			<td>Last Modification Date</td>
+			<td>7/11/2026, 11:29 PM</td>
+		</tr>
+		<tr>
+			<td>Model State</td>
+			<td>[Primary]</td>
+		</tr>
+		<tr>
+			<td>Detect and Eliminate Rigid Body Modes</td>
+			<td>No</td>
+		</tr> 
+	</table>
+	<h3 class="expanded">iProperties</h3>
+	<blockquote>
+		<h4 class="expanded">Summary</h4>
+		<blockquote><table class="ta">
+			<tr><td>Author</td><td>user</td></tr>
+		</table>
+		</blockquote> 
+		<h4 class="expanded">Project</h4>
+		<blockquote><table class="ta">
+			<tr><td>Designer</td><td>user</td></tr><tr><td>Estimated Cost</td><td>$0.00</td></tr><tr><td>Creation Date</td><td>7/11/2026</td></tr>
+		</table>
+		</blockquote> 
+		<h4 class="expanded">Status</h4>
+		<blockquote><table class="ta">
+			<tr><td>Design State</td><td>WorkInProgress</td></tr>
+		</table>
+		</blockquote> 
+		<h4 class="expanded">Physical</h4>
+		<blockquote><table class="ta">
+			<tr><td>Material</td><td>Steel, Mild</td></tr><tr><td>Density</td><td>7.85 g/cm^3</td></tr><tr><td>Mass</td><td>0.2355 kg</td></tr><tr><td>Area</td><td>9400 mm^2</td></tr><tr><td>Volume</td><td>30000 mm^3</td></tr><tr><td>Center of Gravity</td><td>x=75 mm<br/>y=0 mm<br/>z=0 mm</td></tr>
+		</table>
+		<p>Note: Physical values could be different from Physical values used by FEA reported below.</p>
+		</blockquote> 
+	</blockquote> 
+	<p><br/><b>Mesh settings:</b></p>
+	<table class="ta">
+		<tr>
+			<td>Avg. Element Size (fraction of model diameter)</td>
+			<td>0.1</td>
+		</tr>
+		<tr>
+			<td>Min. Element Size (fraction of avg. size)</td>
+			<td>0.2</td>
+		</tr>
+		<tr>
+			<td>Grading Factor</td>
+			<td>1.5</td>
+		</tr>
+		<tr>
+			<td>Max. Turn Angle</td>
+			<td>60 deg</td>
+		</tr>
+		<tr>
+			<td>Create Curved Mesh Elements</td>
+			<td>Yes</td>
+		</tr>
+	</table>
+	<h3 class="expanded">Material(s)</h3>
+	<blockquote>
+	<table class="ta">
+		<tr>
+			<td>Name</td>
+			<td colspan="2">Steel, Mild</td>
+		</tr>
+		<tr>
+			<td rowspan="3">General</td>
+			<td>Mass Density</td>
+			<td>7.85 g/cm^3</td>
+		</tr>
+		<tr>
+			<td>Yield Strength</td>
+			<td>207 MPa</td>
+		</tr>
+		<tr>
+			<td>Ultimate Tensile Strength</td>
+			<td>345 MPa</td>
+		</tr>
+		<tr>
+			<td rowspan="3">Stress</td>
+			<td>Young's Modulus</td>
+			<td>220 GPa</td>
+		</tr>
+		<tr>
+			<td>Poisson's Ratio</td>
+			<td>0.275 ul</td>
+		</tr>
+		<tr>
+			<td>Shear Modulus</td>
+			<td>86.2745 GPa</td>
+		</tr><!--
+		<tr>
+			<td rowspan="3">Stress Thermal</td>
+			<td>Expansion Coefficient</td>
+			<td>$$LinearExpansion$</td>
+		</tr>
+		<tr>
+			<td>Thermal Conductivity</td>
+			<td>$$ThermalConductivity$</td>
+		</tr>
+		<tr>
+			<td>Specific Heat</td>
+			<td>$$SpecificHeat$</td>
+		</tr>-->
+		<tr>
+			<td>Part Name(s)</td>
+			<td colspan="2">ForgeCantilever</td>
+		</tr>
+	</table>
+
+	</blockquote> 
+	<h3 class="expanded">Operating conditions</h3>
+	<blockquote>
+	<h4 class="expanded">Force:1</h4>
+	<blockquote>
+	<table class="ta">
+		<tr>
+			<td>Load Type</td>
+			<td>Force</td>
+		</tr>
+		<tr><td>Magnitude</td><td>200.000 N</td></tr><tr><td>Vector X</td><td>0.000 N</td></tr><tr><td>Vector Y</td><td>0.000 N</td></tr><tr><td>Vector Z</td><td>-200.000 N</td></tr>
+	</table>
+	<h5 class="expanded">Selected Face(s)</h5>
+	<blockquote>
+		<p></p>
+		<p></p> 
+	</blockquote> 
+	</blockquote>
+
+	<h4 class="expanded">Fixed Constraint:1</h4>
+	<blockquote>
+	<table class="ta">
+		<tr>
+			<td>Constraint Type</td>
+			<td>Fixed Constraint</td>
+		</tr>
+		
+	</table>
+	<h5 class="expanded">Selected Face(s)</h5>
+	<blockquote>
+		<p></p>
+		<p></p> 
+	</blockquote> 
+	</blockquote>
+
+
+
+	</blockquote> 
+	<h3 class="expanded">Results</h3>
+	<blockquote>
+	 
+		<h4 class="expanded">Reaction Force and Moment on Constraints</h4>
+		<blockquote>
+		<table class="ta">
+			<tr>
+				<td rowspan="2"><b>Constraint Name</b></td>
+				<td colspan="2"><b>Reaction Force</b></td>
+				<td colspan="2"><b>Reaction Moment</b></td>
+			</tr>
+			<tr>
+				<td><b>Magnitude</b></td>
+				<td><b>Component (X,Y,Z)</b></td>
+				<td><b>Magnitude</b></td>
+				<td><b>Component (X,Y,Z)</b></td>
+			</tr>
+				<tr>
+		<td rowspan="3">Fixed Constraint:1</td>
+		<td rowspan="3">200 N</td>
+		<td>0 N</td>
+		<td rowspan="3">30.0004 N m</td>
+		<td>0 N m</td>
+	</tr>
+	<tr>
+		<td>0 N</td>
+		<td>-30.0004 N m</td>
+	</tr>
+	<tr>
+		<td>200 N</td>
+		<td>0 N m</td>
+	</tr>
+
+		</table>
+		</blockquote> 
+		<h4 class="expanded">Result Summary</h4>
+		<blockquote>
+		<table class="ta">
+			<tr>
+				<td><b>Name</b></td>
+				<td><b>Minimum</b></td>
+				<td><b>Maximum</b></td>
+			</tr>
+			<tr>
+				<td>Volume</td>
+				<td colspan="2">30000 mm^3</td>
+			</tr>
+			<tr>
+				<td>Mass</td>
+				<td colspan="2">0.2355 kg</td>
+			</tr>
+			<tr>
+				<td>Von Mises Stress</td>
+				<td>1.22499 MPa</td>
+				<td>83.9298 MPa</td>
+			</tr> 
+			<tr>
+				<td>1st Principal Stress</td>
+				<td>-33.9738 MPa</td>
+				<td>96.2368 MPa</td>
+			</tr> 
+			<tr>
+				<td>3rd Principal Stress</td>
+				<td>-96.5253 MPa</td>
+				<td>23.3423 MPa</td>
+			</tr> 
+			<tr>
+				<td>Displacement</td>
+				<td>0 mm</td>
+				<td>0.608941 mm</td>
+			</tr> 
+			<tr>
+				<td>Safety Factor</td>
+				<td>2.46635 ul</td>
+				<td>15 ul</td>
+			</tr> 
+			<tr>
+				<td>Stress XX</td>
+				<td>-94.6119 MPa</td>
+				<td>92.7191 MPa</td>
+			</tr> 
+			<tr>
+				<td>Stress XY</td>
+				<td>-14.4986 MPa</td>
+				<td>16.1083 MPa</td>
+			</tr> 
+			<tr>
+				<td>Stress XZ</td>
+				<td>-10.5828 MPa</td>
+				<td>8.59443 MPa</td>
+			</tr> 
+			<tr>
+				<td>Stress YY</td>
+				<td>-35.8873 MPa</td>
+				<td>31.1213 MPa</td>
+			</tr> 
+			<tr>
+				<td>Stress YZ</td>
+				<td>-3.81747 MPa</td>
+				<td>1.37992 MPa</td>
+			</tr> 
+			<tr>
+				<td>Stress ZZ</td>
+				<td>-35.8873 MPa</td>
+				<td>23.6012 MPa</td>
+			</tr> 
+			<tr>
+				<td>X Displacement</td>
+				<td>-0.0304836 mm</td>
+				<td>0.0304724 mm</td>
+			</tr> 
+			<tr>
+				<td>Y Displacement</td>
+				<td>-0.000982188 mm</td>
+				<td>0.000976979 mm</td>
+			</tr> 
+			<tr>
+				<td>Z Displacement</td>
+				<td>-0.608178 mm</td>
+				<td>0 mm</td>
+			</tr> 
+			<tr>
+				<td>Equivalent Strain</td>
+				<td>0.00000473686 ul</td>
+				<td>0.000335305 ul</td>
+			</tr> 
+			<tr>
+				<td>1st Principal Strain</td>
+				<td>0.00000434756 ul</td>
+				<td>0.000384348 ul</td>
+			</tr> 
+			<tr>
+				<td>3rd Principal Strain</td>
+				<td>-0.000384335 ul</td>
+				<td>-0.000000509356 ul</td>
+			</tr> 
+			<tr>
+				<td>Strain XX</td>
+				<td>-0.000377147 ul</td>
+				<td>0.000377155 ul</td>
+			</tr> 
+			<tr>
+				<td>Strain XY</td>
+				<td>-0.0000840258 ul</td>
+				<td>0.0000933549 ul</td>
+			</tr> 
+			<tr>
+				<td>Strain XZ</td>
+				<td>-0.000061332 ul</td>
+				<td>0.0000498086 ul</td>
+			</tr> 
+			<tr>
+				<td>Strain YY</td>
+				<td>-0.000104178 ul</td>
+				<td>0.00011301 ul</td>
+			</tr> 
+			<tr>
+				<td>Strain YZ</td>
+				<td>-0.000022124 ul</td>
+				<td>0.00000799727 ul</td>
+			</tr> 
+			<tr>
+				<td>Strain ZZ</td>
+				<td>-0.000127482 ul</td>
+				<td>0.000108993 ul</td>
+			</tr> 
+		</table>
+		</blockquote> 
+		<h4 class="expanded">Figures</h4>
+		<blockquote>
+			<h5 class="expanded">Von Mises Stress</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote> 
+			<h5 class="expanded">1st Principal Stress</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote> 
+			<h5 class="expanded">3rd Principal Stress</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote> 
+			<h5 class="expanded">Displacement</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote> 
+			<h5 class="expanded">Safety Factor</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote> 
+			<h5 class="expanded">Stress XX</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote> 
+			<h5 class="expanded">Stress XY</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote> 
+			<h5 class="expanded">Stress XZ</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote> 
+			<h5 class="expanded">Stress YY</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote> 
+			<h5 class="expanded">Stress YZ</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote> 
+			<h5 class="expanded">Stress ZZ</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote> 
+			<h5 class="expanded">X Displacement</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote> 
+			<h5 class="expanded">Y Displacement</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote> 
+			<h5 class="expanded">Z Displacement</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote> 
+			<h5 class="expanded">Equivalent Strain</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote> 
+			<h5 class="expanded">1st Principal Strain</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote> 
+			<h5 class="expanded">3rd Principal Strain</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote> 
+			<h5 class="expanded">Strain XX</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote> 
+			<h5 class="expanded">Strain XY</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote> 
+			<h5 class="expanded">Strain XZ</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote> 
+			<h5 class="expanded">Strain YY</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote> 
+			<h5 class="expanded">Strain YZ</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote> 
+			<h5 class="expanded">Strain ZZ</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote>  
+		</blockquote> 
+
+	</blockquote> 
+</blockquote>
+
+<hr />
+<h2 class="expanded">Static Analysis:2</h2>
+<blockquote>
+	<p><b>General objective and settings:</b></p>
+	<table class="ta">
+		<tr>
+			<td>Design Objective</td>
+			<td>Single Point</td>
+		</tr>
+		<tr>
+			<td>Study Type</td>
+			<td>Static Analysis</td>
+		</tr>
+		<tr>
+			<td>Last Modification Date</td>
+			<td>7/11/2026, 11:29 PM</td>
+		</tr>
+		<tr>
+			<td>Model State</td>
+			<td>[Primary]</td>
+		</tr>
+		<tr>
+			<td>Detect and Eliminate Rigid Body Modes</td>
+			<td>No</td>
+		</tr> 
+	</table>
+	<h3 class="expanded">iProperties</h3>
+	<blockquote>
+		<h4 class="expanded">Summary</h4>
+		<blockquote><table class="ta">
+			<tr><td>Author</td><td>user</td></tr>
+		</table>
+		</blockquote> 
+		<h4 class="expanded">Project</h4>
+		<blockquote><table class="ta">
+			<tr><td>Designer</td><td>user</td></tr><tr><td>Estimated Cost</td><td>$0.00</td></tr><tr><td>Creation Date</td><td>7/11/2026</td></tr>
+		</table>
+		</blockquote> 
+		<h4 class="expanded">Status</h4>
+		<blockquote><table class="ta">
+			<tr><td>Design State</td><td>WorkInProgress</td></tr>
+		</table>
+		</blockquote> 
+		<h4 class="expanded">Physical</h4>
+		<blockquote><table class="ta">
+			<tr><td>Material</td><td>Steel, Mild</td></tr><tr><td>Density</td><td>7.85 g/cm^3</td></tr><tr><td>Mass</td><td>0.2355 kg</td></tr><tr><td>Area</td><td>9400 mm^2</td></tr><tr><td>Volume</td><td>30000 mm^3</td></tr><tr><td>Center of Gravity</td><td>x=75 mm<br/>y=0 mm<br/>z=0 mm</td></tr>
+		</table>
+		<p>Note: Physical values could be different from Physical values used by FEA reported below.</p>
+		</blockquote> 
+	</blockquote> 
+	<p><br/><b>Mesh settings:</b></p>
+	<table class="ta">
+		<tr>
+			<td>Avg. Element Size (fraction of model diameter)</td>
+			<td>0.04</td>
+		</tr>
+		<tr>
+			<td>Min. Element Size (fraction of avg. size)</td>
+			<td>0.2</td>
+		</tr>
+		<tr>
+			<td>Grading Factor</td>
+			<td>1.5</td>
+		</tr>
+		<tr>
+			<td>Max. Turn Angle</td>
+			<td>60 deg</td>
+		</tr>
+		<tr>
+			<td>Create Curved Mesh Elements</td>
+			<td>Yes</td>
+		</tr>
+	</table>
+	<h3 class="expanded">Material(s)</h3>
+	<blockquote>
+	<table class="ta">
+		<tr>
+			<td>Name</td>
+			<td colspan="2">Steel, Mild</td>
+		</tr>
+		<tr>
+			<td rowspan="3">General</td>
+			<td>Mass Density</td>
+			<td>7.85 g/cm^3</td>
+		</tr>
+		<tr>
+			<td>Yield Strength</td>
+			<td>207 MPa</td>
+		</tr>
+		<tr>
+			<td>Ultimate Tensile Strength</td>
+			<td>345 MPa</td>
+		</tr>
+		<tr>
+			<td rowspan="3">Stress</td>
+			<td>Young's Modulus</td>
+			<td>220 GPa</td>
+		</tr>
+		<tr>
+			<td>Poisson's Ratio</td>
+			<td>0.275 ul</td>
+		</tr>
+		<tr>
+			<td>Shear Modulus</td>
+			<td>86.2745 GPa</td>
+		</tr><!--
+		<tr>
+			<td rowspan="3">Stress Thermal</td>
+			<td>Expansion Coefficient</td>
+			<td>$$LinearExpansion$</td>
+		</tr>
+		<tr>
+			<td>Thermal Conductivity</td>
+			<td>$$ThermalConductivity$</td>
+		</tr>
+		<tr>
+			<td>Specific Heat</td>
+			<td>$$SpecificHeat$</td>
+		</tr>-->
+		<tr>
+			<td>Part Name(s)</td>
+			<td colspan="2">ForgeCantilever</td>
+		</tr>
+	</table>
+
+	</blockquote> 
+	<h3 class="expanded">Operating conditions</h3>
+	<blockquote>
+	<h4 class="expanded">Force:1</h4>
+	<blockquote>
+	<table class="ta">
+		<tr>
+			<td>Load Type</td>
+			<td>Force</td>
+		</tr>
+		<tr><td>Magnitude</td><td>200.000 N</td></tr><tr><td>Vector X</td><td>0.000 N</td></tr><tr><td>Vector Y</td><td>0.000 N</td></tr><tr><td>Vector Z</td><td>-200.000 N</td></tr>
+	</table>
+	<h5 class="expanded">Selected Face(s)</h5>
+	<blockquote>
+		<p></p>
+		<p></p> 
+	</blockquote> 
+	</blockquote>
+
+	<h4 class="expanded">Fixed Constraint:1</h4>
+	<blockquote>
+	<table class="ta">
+		<tr>
+			<td>Constraint Type</td>
+			<td>Fixed Constraint</td>
+		</tr>
+		
+	</table>
+	<h5 class="expanded">Selected Face(s)</h5>
+	<blockquote>
+		<p></p>
+		<p></p> 
+	</blockquote> 
+	</blockquote>
+
+
+
+	</blockquote> 
+	<h3 class="expanded">Results</h3>
+	<blockquote>
+	 
+		<h4 class="expanded">Reaction Force and Moment on Constraints</h4>
+		<blockquote>
+		<table class="ta">
+			<tr>
+				<td rowspan="2"><b>Constraint Name</b></td>
+				<td colspan="2"><b>Reaction Force</b></td>
+				<td colspan="2"><b>Reaction Moment</b></td>
+			</tr>
+			<tr>
+				<td><b>Magnitude</b></td>
+				<td><b>Component (X,Y,Z)</b></td>
+				<td><b>Magnitude</b></td>
+				<td><b>Component (X,Y,Z)</b></td>
+			</tr>
+				<tr>
+		<td rowspan="3">Fixed Constraint:1</td>
+		<td rowspan="3">200 N</td>
+		<td>0 N</td>
+		<td rowspan="3">30.0009 N m</td>
+		<td>0 N m</td>
+	</tr>
+	<tr>
+		<td>0 N</td>
+		<td>-30.0009 N m</td>
+	</tr>
+	<tr>
+		<td>200 N</td>
+		<td>0 N m</td>
+	</tr>
+
+		</table>
+		</blockquote> 
+		<h4 class="expanded">Result Summary</h4>
+		<blockquote>
+		<table class="ta">
+			<tr>
+				<td><b>Name</b></td>
+				<td><b>Minimum</b></td>
+				<td><b>Maximum</b></td>
+			</tr>
+			<tr>
+				<td>Volume</td>
+				<td colspan="2">30000 mm^3</td>
+			</tr>
+			<tr>
+				<td>Mass</td>
+				<td colspan="2">0.2355 kg</td>
+			</tr>
+			<tr>
+				<td>Von Mises Stress</td>
+				<td>1.0612 MPa</td>
+				<td>88.5357 MPa</td>
+			</tr> 
+			<tr>
+				<td>1st Principal Stress</td>
+				<td>-34.6956 MPa</td>
+				<td>114.967 MPa</td>
+			</tr> 
+			<tr>
+				<td>3rd Principal Stress</td>
+				<td>-114.967 MPa</td>
+				<td>34.6956 MPa</td>
+			</tr> 
+			<tr>
+				<td>Displacement</td>
+				<td>0 mm</td>
+				<td>0.611419 mm</td>
+			</tr> 
+			<tr>
+				<td>Safety Factor</td>
+				<td>2.33804 ul</td>
+				<td>15 ul</td>
+			</tr> 
+			<tr>
+				<td>Stress XX</td>
+				<td>-105.073 MPa</td>
+				<td>105.073 MPa</td>
+			</tr> 
+			<tr>
+				<td>Stress XY</td>
+				<td>-27.5178 MPa</td>
+				<td>23.7135 MPa</td>
+			</tr> 
+			<tr>
+				<td>Stress XZ</td>
+				<td>-18.3672 MPa</td>
+				<td>17.867 MPa</td>
+			</tr> 
+			<tr>
+				<td>Stress YY</td>
+				<td>-39.5463 MPa</td>
+				<td>39.5463 MPa</td>
+			</tr> 
+			<tr>
+				<td>Stress YZ</td>
+				<td>-1.43604 MPa</td>
+				<td>1.43604 MPa</td>
+			</tr> 
+			<tr>
+				<td>Stress ZZ</td>
+				<td>-39.5463 MPa</td>
+				<td>39.5463 MPa</td>
+			</tr> 
+			<tr>
+				<td>X Displacement</td>
+				<td>-0.030531 mm</td>
+				<td>0.0305311 mm</td>
+			</tr> 
+			<tr>
+				<td>Y Displacement</td>
+				<td>-0.000966979 mm</td>
+				<td>0.000966149 mm</td>
+			</tr> 
+			<tr>
+				<td>Z Displacement</td>
+				<td>-0.610656 mm</td>
+				<td>0.000130795 mm</td>
+			</tr> 
+			<tr>
+				<td>Equivalent Strain</td>
+				<td>0.00000410524 ul</td>
+				<td>0.000368418 ul</td>
+			</tr> 
+			<tr>
+				<td>1st Principal Strain</td>
+				<td>0.00000270908 ul</td>
+				<td>0.000446589 ul</td>
+			</tr> 
+			<tr>
+				<td>3rd Principal Strain</td>
+				<td>-0.000446589 ul</td>
+				<td>-0.00000285889 ul</td>
+			</tr> 
+			<tr>
+				<td>Strain XX</td>
+				<td>-0.000403144 ul</td>
+				<td>0.000403144 ul</td>
+			</tr> 
+			<tr>
+				<td>Strain XY</td>
+				<td>-0.000159478 ul</td>
+				<td>0.00013743 ul</td>
+			</tr> 
+			<tr>
+				<td>Strain XZ</td>
+				<td>-0.000106446 ul</td>
+				<td>0.000103548 ul</td>
+			</tr> 
+			<tr>
+				<td>Strain YY</td>
+				<td>-0.000107557 ul</td>
+				<td>0.000107557 ul</td>
+			</tr> 
+			<tr>
+				<td>Strain YZ</td>
+				<td>-0.00000832253 ul</td>
+				<td>0.00000832251 ul</td>
+			</tr> 
+			<tr>
+				<td>Strain ZZ</td>
+				<td>-0.000117059 ul</td>
+				<td>0.000117059 ul</td>
+			</tr> 
+		</table>
+		</blockquote> 
+		<h4 class="expanded">Figures</h4>
+		<blockquote>
+			<h5 class="expanded">Von Mises Stress</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote> 
+			<h5 class="expanded">1st Principal Stress</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote> 
+			<h5 class="expanded">3rd Principal Stress</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote> 
+			<h5 class="expanded">Displacement</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote> 
+			<h5 class="expanded">Safety Factor</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote> 
+			<h5 class="expanded">Stress XX</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote> 
+			<h5 class="expanded">Stress XY</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote> 
+			<h5 class="expanded">Stress XZ</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote> 
+			<h5 class="expanded">Stress YY</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote> 
+			<h5 class="expanded">Stress YZ</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote> 
+			<h5 class="expanded">Stress ZZ</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote> 
+			<h5 class="expanded">X Displacement</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote> 
+			<h5 class="expanded">Y Displacement</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote> 
+			<h5 class="expanded">Z Displacement</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote> 
+			<h5 class="expanded">Equivalent Strain</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote> 
+			<h5 class="expanded">1st Principal Strain</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote> 
+			<h5 class="expanded">3rd Principal Strain</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote> 
+			<h5 class="expanded">Strain XX</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote> 
+			<h5 class="expanded">Strain XY</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote> 
+			<h5 class="expanded">Strain XZ</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote> 
+			<h5 class="expanded">Strain YY</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote> 
+			<h5 class="expanded">Strain YZ</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote> 
+			<h5 class="expanded">Strain ZZ</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote>  
+		</blockquote> 
+
+	</blockquote> 
+</blockquote>
+
+<hr />
+<h2 class="expanded">Modal Analysis:1</h2>
+<blockquote>
+	<p><b>General objective and settings:</b></p>
+	<table class="ta">
+		<tr>
+			<td>Design Objective</td>
+			<td>Single Point</td>
+		</tr>
+		<tr>
+			<td>Study Type</td>
+			<td>Modal Analysis</td>
+		</tr>
+		<tr>
+			<td>Last Modification Date</td>
+			<td>7/11/2026, 11:30 PM</td>
+		</tr>
+		<tr>
+			<td>Model State</td>
+			<td>[Primary]</td>
+		</tr>
+		<tr>
+			<td>Number of Modes</td>
+			<td>8</td>
+		</tr>
+		<tr>
+			<td>Frequency Range</td>
+			<td>Undefined</td>
+		</tr>
+		<tr>
+			<td>Compute Preloaded Modes</td>
+			<td>No</td>
+		</tr>
+		<tr>
+			<td>Enhanced Accuracy</td>
+			<td>No</td>
+		</tr> 
+	</table>
+	<h3 class="expanded">iProperties</h3>
+	<blockquote>
+		<h4 class="expanded">Summary</h4>
+		<blockquote><table class="ta">
+			<tr><td>Author</td><td>user</td></tr>
+		</table>
+		</blockquote> 
+		<h4 class="expanded">Project</h4>
+		<blockquote><table class="ta">
+			<tr><td>Designer</td><td>user</td></tr><tr><td>Estimated Cost</td><td>$0.00</td></tr><tr><td>Creation Date</td><td>7/11/2026</td></tr>
+		</table>
+		</blockquote> 
+		<h4 class="expanded">Status</h4>
+		<blockquote><table class="ta">
+			<tr><td>Design State</td><td>WorkInProgress</td></tr>
+		</table>
+		</blockquote> 
+		<h4 class="expanded">Physical</h4>
+		<blockquote><table class="ta">
+			<tr><td>Material</td><td>Steel, Mild</td></tr><tr><td>Density</td><td>7.85 g/cm^3</td></tr><tr><td>Mass</td><td>0.2355 kg</td></tr><tr><td>Area</td><td>9400 mm^2</td></tr><tr><td>Volume</td><td>30000 mm^3</td></tr><tr><td>Center of Gravity</td><td>x=75 mm<br/>y=0 mm<br/>z=0 mm</td></tr>
+		</table>
+		<p>Note: Physical values could be different from Physical values used by FEA reported below.</p>
+		</blockquote> 
+	</blockquote> 
+	<p><br/><b>Mesh settings:</b></p>
+	<table class="ta">
+		<tr>
+			<td>Avg. Element Size (fraction of model diameter)</td>
+			<td>0.08</td>
+		</tr>
+		<tr>
+			<td>Min. Element Size (fraction of avg. size)</td>
+			<td>0.2</td>
+		</tr>
+		<tr>
+			<td>Grading Factor</td>
+			<td>1.5</td>
+		</tr>
+		<tr>
+			<td>Max. Turn Angle</td>
+			<td>60 deg</td>
+		</tr>
+		<tr>
+			<td>Create Curved Mesh Elements</td>
+			<td>Yes</td>
+		</tr>
+	</table>
+	<h3 class="expanded">Material(s)</h3>
+	<blockquote>
+	<table class="ta">
+		<tr>
+			<td>Name</td>
+			<td colspan="2">Steel, Mild</td>
+		</tr>
+		<tr>
+			<td rowspan="3">General</td>
+			<td>Mass Density</td>
+			<td>7.85 g/cm^3</td>
+		</tr>
+		<tr>
+			<td>Yield Strength</td>
+			<td>207 MPa</td>
+		</tr>
+		<tr>
+			<td>Ultimate Tensile Strength</td>
+			<td>345 MPa</td>
+		</tr>
+		<tr>
+			<td rowspan="3">Stress</td>
+			<td>Young's Modulus</td>
+			<td>220 GPa</td>
+		</tr>
+		<tr>
+			<td>Poisson's Ratio</td>
+			<td>0.275 ul</td>
+		</tr>
+		<tr>
+			<td>Shear Modulus</td>
+			<td>86.2745 GPa</td>
+		</tr><!--
+		<tr>
+			<td rowspan="3">Stress Thermal</td>
+			<td>Expansion Coefficient</td>
+			<td>$$LinearExpansion$</td>
+		</tr>
+		<tr>
+			<td>Thermal Conductivity</td>
+			<td>$$ThermalConductivity$</td>
+		</tr>
+		<tr>
+			<td>Specific Heat</td>
+			<td>$$SpecificHeat$</td>
+		</tr>-->
+		<tr>
+			<td>Part Name(s)</td>
+			<td colspan="2">ForgeCantilever</td>
+		</tr>
+	</table>
+
+	</blockquote> 
+	<h3 class="expanded">Operating conditions</h3>
+	<blockquote>
+
+	<h4 class="expanded">Fixed Constraint:1</h4>
+	<blockquote>
+	<table class="ta">
+		<tr>
+			<td>Constraint Type</td>
+			<td>Fixed Constraint</td>
+		</tr>
+		
+	</table>
+	<h5 class="expanded">Selected Face(s)</h5>
+	<blockquote>
+		<p></p>
+		<p></p> 
+	</blockquote> 
+	</blockquote>
+
+
+
+	</blockquote> 
+	<h3 class="expanded">Results</h3>
+	<blockquote>
+	
+		<h4 class="expanded">Frequency Value(s)</h4>
+		<blockquote>
+		<table class="ta">
+			<tr><td>F1</td><td>383.31 Hz</td></tr><tr><td>F2</td><td>755.14 Hz</td></tr><tr><td>F3</td><td>2355.99 Hz</td></tr><tr><td>F4</td><td>3973.29 Hz</td></tr><tr><td>F5</td><td>4385.02 Hz</td></tr><tr><td>F6</td><td>6416.13 Hz</td></tr><tr><td>F7</td><td>8856.07 Hz</td></tr><tr><td>F8</td><td>11150.22 Hz</td></tr>
+		</table>
+		</blockquote>
+		<h4 class="expanded">Result Summary</h4>
+		<blockquote>
+		<table class="ta">
+			<tr>
+				<td><b>Name</b></td>
+				<td><b>Result Value</b></td>
+			</tr>
+			<tr>
+				<td>Volume</td>
+				<td>30000 mm^3</td>
+			</tr>
+			<tr>
+				<td>Mass</td>
+				<td>0.2355 kg</td>
+			</tr>
+		</table>
+		</blockquote> 
+		<h4 class="expanded">Figures</h4>
+		<blockquote>
+						<h5 class="expanded">F1  383.31 Hz Displacement</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote>
+			<h5 class="expanded">F1  383.31 Hz X Displacement</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote>
+			<h5 class="expanded">F1  383.31 Hz Y Displacement</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote>
+			<h5 class="expanded">F1  383.31 Hz Z Displacement</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote>
+			<h5 class="expanded">F2  755.14 Hz Displacement</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote>
+			<h5 class="expanded">F2  755.14 Hz X Displacement</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote>
+			<h5 class="expanded">F2  755.14 Hz Y Displacement</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote>
+			<h5 class="expanded">F2  755.14 Hz Z Displacement</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote>
+			<h5 class="expanded">F3  2355.99 Hz Displacement</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote>
+			<h5 class="expanded">F3  2355.99 Hz X Displacement</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote>
+			<h5 class="expanded">F3  2355.99 Hz Y Displacement</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote>
+			<h5 class="expanded">F3  2355.99 Hz Z Displacement</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote>
+			<h5 class="expanded">F4  3973.29 Hz Displacement</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote>
+			<h5 class="expanded">F4  3973.29 Hz X Displacement</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote>
+			<h5 class="expanded">F4  3973.29 Hz Y Displacement</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote>
+			<h5 class="expanded">F4  3973.29 Hz Z Displacement</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote>
+			<h5 class="expanded">F5  4385.02 Hz Displacement</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote>
+			<h5 class="expanded">F5  4385.02 Hz X Displacement</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote>
+			<h5 class="expanded">F5  4385.02 Hz Y Displacement</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote>
+			<h5 class="expanded">F5  4385.02 Hz Z Displacement</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote>
+			<h5 class="expanded">F6  6416.13 Hz Displacement</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote>
+			<h5 class="expanded">F6  6416.13 Hz X Displacement</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote>
+			<h5 class="expanded">F6  6416.13 Hz Y Displacement</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote>
+			<h5 class="expanded">F6  6416.13 Hz Z Displacement</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote>
+			<h5 class="expanded">F7  8856.07 Hz Displacement</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote>
+			<h5 class="expanded">F7  8856.07 Hz X Displacement</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote>
+			<h5 class="expanded">F7  8856.07 Hz Y Displacement</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote>
+			<h5 class="expanded">F7  8856.07 Hz Z Displacement</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote>
+			<h5 class="expanded">F8  11150.22 Hz Displacement</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote>
+			<h5 class="expanded">F8  11150.22 Hz X Displacement</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote>
+			<h5 class="expanded">F8  11150.22 Hz Y Displacement</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote>
+			<h5 class="expanded">F8  11150.22 Hz Z Displacement</h5>
+			<blockquote>
+				<p></p>
+				<p></p> 
+			</blockquote>
+ 
+		</blockquote> 
+
+	</blockquote> 
+</blockquote>
+
+<p><br/></p>
+<hr class="unprinted" />
+<p class="unprinted">Image Width (pixels): <input type="button" value="320" onclick="zoom('320px')" />
+<input type="button" value="400" onclick="zoom('400px')" />
+<input type="button" value="640" onclick="zoom('640px')" />
+<input type="button" value="800" onclick="zoom('800px')" />
+<input type="button" value="1024" onclick="zoom('1024px')" />
+<input type="button" value="1280" onclick="zoom('1280px')" />
+<input type="button" value="Fit Width" onclick="zoom('100%')" />
+<input type="button" value="Original" onclick="zoom('640px')" /></p> 
+</body>
+</html>

@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "inventor-forge"
+version = "0.1.0"
+description = "Autodesk Inventor for AI agents: an MCP server with 100+ COM-driven tools (parts, sheet metal, assemblies, drawings with QA, stress/modal analysis)"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Robert Barnett" }]
+requires-python = ">=3.10"
+dependencies = ["pywin32>=306; sys_platform == 'win32'"]
+classifiers = ["Operating System :: Microsoft :: Windows", "Topic :: Scientific/Engineering"]
+
+[project.scripts]
+inventor-forge = "inventor_forge.server:main"
+
+[tool.setuptools.packages.find]
+include = ["inventor_forge*"]

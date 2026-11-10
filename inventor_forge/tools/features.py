@@ -459,3 +459,118 @@ def suppress_feature(s: Session, feature: str, suppress: bool = True) -> dict:
     s.part().Update()
     out = s.delta(("Suppress " if suppress else "Unsuppress ") + f.Name, before)
     return out
+
+
+@tool("features")
+def coil(s: Session, pitch: float, revolutions: float, axis: str = "Z", operation: str = "join", clockwise: bool = False,
+         sketch_index: int = 0) -> dict:
+    """Coil / spring: sweep the active sketch's closed profile helically about an axis.
+
+    pitch: mm per turn
+    axis: X | Y | Z or a work axis name; the profile must be offset from this axis
+    """
+    _, prof = _profile(s, sketch_index)
+    before = s.snapshot()
+    feat = s.cdef().Features.CoilFeatures.AddByPitchAndRevolution(prof, s.work_axis(axis), pitch * MM, float(revolutions),
+                                                                  _op(operation), ClockwiseRotation=bool(clockwise))
+    out = s.delta(feat.Name, before)
+    out["feature"] = feat.Name
+    return out
+
+
+def _bodies(s: Session):
+    return list(items(s.cdef().SurfaceBodies))
+
+
+@tool("features")
+def combine_bodies(s: Session, base: int = 1, tools: list[int] | None = None, operation: str = "join",
+                   keep_tools: bool = False) -> dict:
+    """Boolean between solid bodies of a multi-body part. operation: join | cut | intersect.
+
+    base: 1-based body kept as the result
+    tools: bodies used as tools (default: every other body)
+    """
+    bodies = _bodies(s)
+    if len(bodies) < 2:
+        raise InventorError("the part needs at least two solid bodies")
+    tool_ids = tools or [i for i in range(1, len(bodies) + 1) if i != base]
+    before = s.snapshot()
+    feat = s.cdef().Features.CombineFeatures.Add(bodies[base - 1], s.collection([bodies[i - 1] for i in tool_ids]),
+                                                 _op(operation), bool(keep_tools))
+    out = s.delta(feat.Name, before)
+    out["feature"] = feat.Name
+    return out
+
+
+@tool("features")
+def split_part(s: Session, plane: str = "XY", remove: str = "negative", keep_both: bool = False) -> dict:
+    """Cut the part with a plane (XY/XZ/YZ or work plane name), removing one side, or split it into two bodies.
+
+    remove: positive | negative — the side discarded (ignored with keep_both)
+    keep_both: split into two solid bodies, nothing removed
+    """
+    sf = s.cdef().Features.SplitFeatures
+    before = s.snapshot()
+    if keep_both:
+        feat = sf.SplitBody(s.work_plane(plane), s.body())
+    else:
+        feat = sf.TrimSolid(s.work_plane(plane), s.body(), remove.lower().startswith("pos"))
+    out = s.delta(feat.Name, before)
+    out["feature"] = feat.Name
+    out["bodies"] = s.cdef().SurfaceBodies.Count
+    return out
+
+
+@tool("features")
+def thicken_face(s: Session, faces: list[int], distance: float, operation: str = "join", direction: str = "positive") -> dict:
+    """Thicken or offset faces by a distance (mm). operation join adds material, cut removes it."""
+    before = s.snapshot()
+    fc = s.face_collection([s.face(i) for i in faces])
+    feat = s.cdef().Features.ThickenFeatures.Add(fc, distance * MM, _dir(direction), _op(operation), False)
+    out = s.delta(feat.Name, before)
+    out["feature"] = feat.Name
+    return out
+
+
+@tool("features")
+def face_draft(s: Session, faces: list[int], angle: float, pull_plane: str = "XY") -> dict:
+    """Mould draft on faces by an angle (degrees) relative to a pull direction normal to a plane (fixed at that plane)."""
+    fd = s.cdef().Features.FaceDraftFeatures
+    d = fd.CreateFaceDraftDefinition()
+    d.SetFixedPlane(s.face_collection([s.face(i) for i in faces]), s.work_plane(pull_plane), f"{angle} deg")
+    before = s.snapshot()
+    feat = fd.Add(d)
+    out = s.delta(feat.Name, before)
+    out["feature"] = feat.Name
+    return out
+
+
+@tool("features")
+def emboss_text(s: Session, text: str, x: float = 0.0, y: float = 0.0, depth: float = 0.5, engrave: bool = True,
+                height: float = 5.0, face_index: int = 0) -> dict:
+    """Engrave (or emboss) text into a planar face. With face_index the text is centred on the face and (x, y) are
+    offsets from that centre in mm; without it (x, y) are coordinates in the active sketch. height is the text height.
+
+    face_index: planar face (0 = the active sketch)
+    """
+    cd = s.cdef()
+    if face_index:
+        sk = cd.Sketches.Add(s.face(face_index), False)
+        s.set_sketch(sk)
+    else:
+        sk = s.sketch()
+    size = f"{height * MM:.4f}"
+    box = sk.TextBoxes.AddFitted(s.p2(x, y), f'<StyleOverride FontSize="{size}">{text}</StyleOverride>')
+    if face_index:                     # a face sketch's origin can be at a corner; centre the text on the face
+        rb = s.face(face_index).Evaluator.RangeBox
+        mid = s.tg.CreatePoint((rb.MinPoint.X + rb.MaxPoint.X) / 2, (rb.MinPoint.Y + rb.MaxPoint.Y) / 2,
+                               (rb.MinPoint.Z + rb.MaxPoint.Z) / 2)
+        c2 = sk.ModelToSketchSpace(mid)
+        box.Origin = s.tg.CreatePoint2d(c2.X + x * MM - box.Width / 2, c2.Y + y * MM + box.Height / 2)
+    prof = sk.Profiles.AddForSolid()
+    ef = cd.Features.EmbossFeatures
+    fn = ef.AddEngraveFromFace if engrave else ef.AddEmbossFromFace
+    feat, _used, before = _try_directions(s, "Emboss", lambda dn: fn(prof, depth * MM, _dir(dn)), "negative", "positive")
+    out = s.delta(feat.Name, before)
+    out["feature"] = feat.Name
+    return out

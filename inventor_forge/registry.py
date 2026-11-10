@@ -28,6 +28,7 @@ class Tool:
     description: str
     schema: dict
     mutates: bool
+    com: bool = True          # False: never talks to Inventor, safe while it is solving
 
 
 def _json_type(ann: Any) -> dict:
@@ -74,7 +75,7 @@ def _parse_doc(doc: str) -> tuple[str, dict[str, str]]:
     return desc, params
 
 
-def tool(group: str, name: str | None = None, mutates: bool = True):
+def tool(group: str, name: str | None = None, mutates: bool = True, com: bool = True):
     def deco(fn):
         sig = inspect.signature(fn)
         hints = typing.get_type_hints(fn)
@@ -95,11 +96,11 @@ def tool(group: str, name: str | None = None, mutates: bool = True):
         if required:
             schema["required"] = required
         tname = name or fn.__name__
-        TOOLS[tname] = Tool(tname, group, fn, desc, schema, mutates)
+        TOOLS[tname] = Tool(tname, group, fn, desc, schema, mutates, com)
         return fn
     return deco
 
 
 def load_all() -> dict[str, Tool]:
-    from .tools import assembly, docs, drawing, features, fea, inspect as _inspect, sheetmetal, sketch, system  # noqa: F401
+    from .tools import assembly, docs, drawing, features, fea, inspect as _inspect, parametric, sheetmetal, sketch, standard, studies, system  # noqa: F401
     return TOOLS

@@ -85,3 +85,133 @@ def test_analysis_needs_the_user_go_ahead_first():
     r = analyze_stress(None, fixed_faces=[1], loads=[{"face": 2, "force": [0, 0, -1]}])
     assert r["status"] == "needs_user_go_ahead" and "MOUSE AND KEYBOARD" in r["notice"]
     assert analyze_modes(None, fixed_faces=[1])["status"] == "needs_user_go_ahead"
+
+
+def test_report_parser_finds_renamed_studies(tmp_path):
+    """Studies are usually given their own names, so the section heading can be anything."""
+    with open(FIXTURE, encoding="utf-8", errors="replace") as f:
+        text = f.read().replace(">Static Analysis:2<", ">Pull 15deg - 30mm plate<")
+    p = tmp_path / "named.html"
+    p.write_text(text, encoding="utf-8")
+    assert parse_report(str(p), "Pull 15deg - 30mm plate")["summary"]["Von Mises Stress"]["max"] == pytest.approx(88.54, abs=0.01)
+    assert parse_report(str(p), "Static Analysis:1")["mesh_avg_size_fraction"] == 0.1
+    with pytest.raises(Exception, match="not in this report"):
+        parse_report(str(p), "No such study")
+
+
+def test_value_box_comparison():
+    from inventor_forge.uidrive import same_value
+    assert same_value("2.000 MPa", "2 MPa") and same_value("0.070", "0.07") and same_value("-30.000 N", "-30")
+    assert not same_value("", "0.07") and not same_value("20.000 N", "2")
+
+
+def test_busy_inventor_retries_reads_but_not_edits():
+    import pywintypes
+    from inventor_forge.engine import Forge
+    from inventor_forge.registry import TOOLS, tool
+
+    calls = {"read": 0, "edit": 0}
+    busy = pywintypes.com_error(-2147418111, "Call was rejected by callee.", None, None)
+
+    @tool("system", name="_read_probe", mutates=False)
+    def _read(s) -> dict:
+        """Test double that is refused twice and then succeeds."""
+        calls["read"] += 1
+        if calls["read"] < 3:
+            raise busy
+        return {"value": 1}
+
+    @tool("system", name="_edit_probe")
+    def _edit(s) -> dict:
+        """Test double for an edit that Inventor refuses."""
+        calls["edit"] += 1
+        raise busy
+
+    forge = Forge()
+    forge.session.solver_busy = lambda: []
+    try:
+        assert forge.safe_call("_read_probe", {}) == {"ok": True, "value": 1}
+        r = forge.safe_call("_edit_probe", {})
+        assert not r["ok"] and "busy" in r["error"] and calls["edit"] == 1
+    finally:
+        TOOLS.pop("_read_probe"), TOOLS.pop("_edit_probe")
+
+
+def test_tools_refuse_while_a_solve_is_running():
+    from inventor_forge.engine import Forge
+    forge = Forge()
+    forge.session.solver_busy = lambda: ["Simulate"]
+    r = forge.safe_call("status", {})
+    assert not r["ok"] and "solve" in r["error"]
+    forge.session.solver_busy = lambda: []
+
+
+def test_private_session_never_falls_back_to_the_users_inventor():
+    from inventor_forge.com import InventorError
+    from inventor_forge.session import Session
+
+    class Dead:
+        @property
+        def Caption(self):
+            raise OSError("gone")
+
+    s = Session()
+    s._app, s.private, s.pid = Dead(), True, 123
+    s._connect = lambda: pytest.fail("attached to another Inventor")
+    with pytest.raises(InventorError, match="private Inventor"):
+        _ = s.app
+
+
+
+def test_batch_restarts_its_own_inventor_and_carries_on(tmp_path, monkeypatch):
+    """When the private Inventor running a batch dies, a new one is started, the file reopened, and the batch goes on."""
+    from inventor_forge.tools import studies
+
+    class Docs:
+        def Open(self, path, visible):
+            return "doc"
+
+    class App:
+        Documents = Docs()
+
+    class FakeSession:
+        private, pid, workdir = True, 111, str(tmp_path)
+        _app = None
+        started = 0
+
+        def doc(self):
+            class D:
+                FullFileName = str(tmp_path / "part.ipt")
+                DisplayName = "part.ipt"
+            return D()
+
+        def start_private(self):
+            FakeSession.started += 1
+            self.private, self.pid = True, 222
+
+        @property
+        def app(self):
+            return App()
+
+        def set_current(self, d):
+            pass
+
+    s = FakeSession()
+    alive = {111}
+    calls = []
+
+    def run_case(sess, pid, template, case, want, timeout, data, path):
+        calls.append((case["name"], pid))
+        if len(calls) == 1:
+            alive.discard(111)
+            raise RuntimeError("RPC server unavailable")
+        data["cases"][case["name"]] = {"status": "done", "results": {}}
+
+    monkeypatch.setattr(studies, "_pid", lambda sess: sess.pid)
+    monkeypatch.setattr(studies, "_study_nodes", lambda sess: {"T": object()})
+    monkeypatch.setattr(studies, "_run_case", run_case)
+    monkeypatch.setattr(studies, "_enter_analysis", lambda sess: None)
+    monkeypatch.setattr(studies.U, "pids_named", lambda exe: sorted(alive | {222}))
+    r = studies.run_study_cases(s, template="T", cases=[{"name": "A"}, {"name": "B"}], results_path=str(tmp_path / "r.json"))
+    assert r["inventor_restarts"] == 1 and r["ran"] == 2 and FakeSession.started == 1
+    assert calls == [("A", 111), ("A", 222), ("B", 222)]

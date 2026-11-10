@@ -7,11 +7,13 @@ from __future__ import annotations
 
 import math
 import os
+import re
 import time
 
 from ..com import MM, InventorError, K, items, r, safe
 from ..registry import tool
 from ..session import Session
+from .inspect import face_normal
 
 SIZES = {"A0": "kA0DrawingSheetSize", "A1": "kA1DrawingSheetSize", "A2": "kA2DrawingSheetSize",
          "A3": "kA3DrawingSheetSize", "A4": "kA4DrawingSheetSize"}
@@ -94,7 +96,8 @@ def create_drawing(s: Session, standard: str = "AS1100", sheet_size: str = "A3",
     """New drawing document (ISO template; AS1100 = third-angle projection, ISO = first-angle)."""
     app = s.app
     try:
-        tpl = app.FileManager.GetTemplateFile(K.kDrawingDocumentObject, K.kMetricSystemOfMeasure, K.kISO_DraftingStandard)
+        tpl = s.stock_template("ISO.idw") or app.FileManager.GetTemplateFile(K.kDrawingDocumentObject, K.kMetricSystemOfMeasure,
+                                                                             K.kISO_DraftingStandard)
     except Exception:
         tpl = ""
     d = app.Documents.Add(K.kDrawingDocumentObject, tpl, True)
@@ -112,6 +115,9 @@ def create_drawing(s: Session, standard: str = "AS1100", sheet_size: str = "A3",
                 if ds is not None:
                     safe(lambda ds=ds: setattr(ds, "DecimalMarkerType", K.kPeriodDecimalMarker))
                     safe(lambda ds=ds: setattr(ds, "TrailingZeroDisplay", False))
+                    for attr2 in ("DiameterExternalTextOrientation", "DiameterInternalTextOrientation",
+                                  "RadialTextOrientation"):
+                        safe(lambda ds=ds, a2=attr2: setattr(ds, a2, K.kInlineHorizontalDimensionText))
     sh = d.ActiveSheet
     _resize(sh, sheet_size, orientation)
     if name:
@@ -373,7 +379,16 @@ def _pt(c):
 
 
 def _is_circle(c) -> bool:
-    return safe(lambda: c.CurveType, 0) in (K.get("kCircleCurve"), K.get("kCircleCurve2d"))
+    """A full circle as drawn in this view. A circular edge seen side-on is a straight line on the sheet."""
+    if safe(lambda: c.CurveType, 0) not in (K.get("kCircleCurve"), K.get("kCircleCurve2d")):
+        return False
+    if safe(lambda: c.EdgeType) == K.kThreadEdge:     # cosmetic thread lines aren't features
+        return False
+    rb = safe(lambda: c.Evaluator2D.RangeBox)
+    if rb is None:
+        return True
+    w, h = rb.MaxPoint.X - rb.MinPoint.X, rb.MaxPoint.Y - rb.MinPoint.Y
+    return w > 1e-4 and abs(w - h) <= 0.02 * max(w, h)
 
 
 @tool("drawing")
@@ -479,7 +494,7 @@ def add_hole_note(s: Session, view: str, edge: int, x: float = 0.0, y: float = 0
         cp = c[0].CenterPoint
         x, y = cp.X * 10 + 18, cp.Y * 10 + 18
     note = sh.DrawingNotes.HoleThreadNotes.Add(s.tg.CreatePoint2d(x * MM, y * MM), c[0])
-    return {"note": safe(lambda: note.Text, "")}
+    return {"note": re.sub(r"\bn(?=\d)", "Ø", safe(lambda: note.Text.Text, "") or "")}
 
 
 @tool("drawing")
@@ -528,7 +543,7 @@ def auto_balloon(s: Session, view: str = "") -> dict:
         raise InventorError("auto_balloon needs an assembly view")
     l, b, rgt, t = _box(v)
     cx, cy = (l + rgt) / 2, (b + t) / 2
-    placed, done = 0, set()
+    placed, done, taken = 0, set(), []
     for occ in items(md.ComponentDefinition.Occurrences):
         fname = safe(lambda o=occ: o.Definition.Document.FullFileName, occ.Name)
         if fname in done:
@@ -543,11 +558,41 @@ def auto_balloon(s: Session, view: str = "") -> dict:
         dx, dy = mp.X * 10 - cx, mp.Y * 10 - cy
         n = math.hypot(dx, dy) or 1
         rad = max(rgt - l, t - b) / 2 + 12
-        bx, by = cx + dx / n * rad, cy + dy / n * rad
+        ang = math.atan2(dy, dx)
+        W, H = sh.Width * 10, sh.Height * 10
+        tb = safe(lambda: sh.TitleBlock.RangeBox)
+        blocked = [_lbox(o) for o in items(sh.DrawingViews) if o.Name != v.Name]
+        blocked += [(p.RangeBox.MinPoint.X * 10, p.RangeBox.MinPoint.Y * 10, p.RangeBox.MaxPoint.X * 10, p.RangeBox.MaxPoint.Y * 10)
+                    for p in items(sh.PartsLists)]
+        if tb is not None:
+            blocked.append((tb.MinPoint.X * 10, tb.MinPoint.Y * 10, tb.MaxPoint.X * 10, tb.MaxPoint.Y * 10))
+
+        def spot_ok(px, py):
+            box = (px - 8, py - 8, px + 8, py + 8)
+            return (18 < px < W - 18 and 18 < py < H - 18 and not _overlap(box, (l, b, rgt, t))
+                    and not any(_overlap(box, o) for o in blocked)
+                    and all(math.hypot(px - qx, py - qy) >= BALLOON_GAP for qx, qy in taken))
+
+        bx, by = None, None
+        for ring in (0, 14, 28, 42):                  # nearest free spot around the view
+            for step in range(36):
+                sign = 1 if step % 2 else -1
+                a2 = ang + sign * (step + 1) // 2 * math.radians(10)
+                # an ellipse hugging the view's real shape, not a circle around its longest side
+                px = cx + ((rgt - l) / 2 + 14 + ring) * math.cos(a2) * 1.15
+                py = cy + ((t - b) / 2 + 14 + ring) * math.sin(a2) * 1.15
+                if spot_ok(px, py):
+                    bx, by = px, py
+                    break
+            if bx is not None:
+                break
+        if bx is None:
+            bx, by = cx + dx / n * rad, cy + dy / n * rad
         pts = s.collection([s.tg.CreatePoint2d(bx * MM, by * MM), sh.CreateGeometryIntent(c)])
         if safe(lambda: sh.Balloons.Add(pts), None) is not None:
             placed += 1
             done.add(fname)
+            taken.append((bx, by))
     return {"balloons": placed, "view": v.Name}
 
 
@@ -627,16 +672,38 @@ def _extents(md) -> list[float]:
             (rb.MaxPoint.Z - rb.MinPoint.Z) * 10]
 
 
+def _best_base(md, L: list[float]) -> str:
+    """The orientation for the main view of a part: the one that sees the most holes end-on, then the largest area."""
+    from collections import Counter
+    axes: Counter = Counter()
+    if safe(lambda: md.ComponentDefinition.SurfaceBodies.Count, 0):
+        for f in items(md.ComponentDefinition.SurfaceBodies.Item(1).Faces):
+            if safe(lambda f=f: f.SurfaceType) == K.kCylinderSurface and not _is_boss_face(f):   # holes, not round outsides
+                a = f.Geometry.AxisVector
+                comp = [abs(a.X), abs(a.Y), abs(a.Z)]
+                if max(comp) > 0.999:
+                    axes["XYZ"[comp.index(max(comp))]] += 1
+    area = {"Z": L[0] * L[1], "Y": L[0] * L[2], "X": L[2] * L[1]}      # Front looks along Z, Top along Y, Right along X
+    best = max("ZYX", key=lambda ax: (axes[ax], area[ax] > 1.01 * max(area[o] for o in "ZYX" if o != ax), ax == "Z"))
+    return {"Z": "front", "Y": "top", "X": "right"}[best]
+
+
+def _base_sizes(L: list[float], base: str, rotate: bool) -> tuple:
+    """(width, height, depth) of the main view on the sheet, before scaling."""
+    fw, fh, dp = {"front": (L[0], L[1], L[2]), "top": (L[0], L[2], L[1]), "right": (L[2], L[1], L[0])}[base]
+    return (fh, fw, dp) if rotate else (fw, fh, dp)
+
+
 def _layout(s: Session, md, want: list[str], third: bool, scale: float, label_gap: float = 14.0,
-            gap: float = 22.0) -> dict:
+            gap: float = 22.0, base: str = "front", rotate: bool = False) -> dict:
     """Place FRONT (+TOP/+RIGHT projected) in the left ~70 % of the free area and an ISOMETRIC in the
     top-right, all clear of the title block. Inventor's Front view of a part shows X across and Y up."""
     sh = _sheet(s)
     g = _region(sh)
     L = _extents(md)
-    fw, fh = L[0], L[1]
-    tw, th = L[0], L[2]
-    rw, rh = L[2], L[1]
+    fw, fh, dp = _base_sizes(L, base, rotate)
+    tw, th = fw, dp
+    rw, rh = dp, fh
     has_top, has_right = "top" in want, "right" in want
     dm = 30.0          # room left of / below the views for dimensions
     g = dict(g, x0=g["x0"] + dm, y0=g["y0"] + dm * 0.6)
@@ -662,7 +729,9 @@ def _layout(s: Session, md, want: list[str], third: bool, scale: float, label_ga
         top_y = fy - fh * sc / 2 - gap - label_gap - th * sc / 2
         right_x = fx - fw * sc / 2 - gap - rw * sc / 2
     src = md.FullFileName or md.DisplayName
-    made = [add_base_view(s, model=src, x=fx, y=fy, scale=sc, orientation="front", name="FRONT")["view"]]
+    made = [add_base_view(s, model=src, x=fx, y=fy, scale=sc, orientation=base, name="FRONT")["view"]]
+    if rotate:                                       # long parts lie down; projected views follow the rotation
+        _view(s, "FRONT").Rotation = math.pi / 2
     if has_top:
         made.append(add_projected_view(s, "FRONT", fx, top_y, name="TOP")["view"])
     if has_right:
@@ -727,6 +796,419 @@ def _hole_position_dims(s: Session, view_name: str) -> int:
     return n
 
 
+def _curve_box(c):
+    """(xmin, ymin, xmax, ymax) of a drawing curve on the sheet, cm. Works for silhouette lines too, whose
+    start and end points Inventor leaves empty."""
+    rb = safe(lambda: c.Evaluator2D.RangeBox)
+    if rb is None:
+        return None
+    return rb.MinPoint.X, rb.MinPoint.Y, rb.MaxPoint.X, rb.MaxPoint.Y
+
+
+def _straight_outline(v) -> tuple[list, list]:
+    """Vertical and horizontal straight curves of a view as (position in cm, curve)."""
+    vert, horz = [], []
+    for c in _curves(v):
+        if _is_circle(c):
+            continue
+        box = _curve_box(c)
+        if box is None:
+            continue
+        w, h = box[2] - box[0], box[3] - box[1]
+        if w < 1e-5 and h > 1e-4:
+            vert.append((box[0], c))
+        elif h < 1e-5 and w > 1e-4:
+            horz.append((box[1], c))
+    return vert, horz
+
+
+def _existing_values(sh, linear_only: bool = False) -> list[float]:
+    return [safe(lambda d=d: d.ModelValue * 10, -1.0) for d in items(sh.DrawingDimensions)
+            if not linear_only or safe(lambda d=d: d.Type, 0) == K.kLinearGeneralDimensionObject]
+
+
+def _dimension_view(dim, names) -> str | None:
+    """Name of the view a dimension is attached to (retrieved ones attach through curve segments)."""
+    for path in ("IntentOne.Geometry.Parent", "Intent.Geometry.Parent",
+                 "IntentOne.Geometry.Parent.Parent", "Intent.Geometry.Parent.Parent"):
+        obj = dim
+        for attr in path.split("."):
+            obj = safe(lambda o=obj, a=attr: getattr(o, a))
+            if obj is None:
+                break
+        name = safe(lambda o=obj: o.Name) if obj is not None else None
+        if name in names:
+            return name
+    return None
+
+
+def _have(values: list[float], v: float, tol: float = 0.02) -> bool:
+    return any(abs(x - v) <= tol for x in values)
+
+
+def _circles_by_centre(v) -> dict:
+    """{(cx, cy) in cm: [(model diameter mm, curve), ...]} for the full circles in a view."""
+    out: dict = {}
+    for c in _curves(v):
+        if not _is_circle(c):
+            continue
+        cp = c.CenterPoint
+        box = _curve_box(c)
+        if box is None:
+            continue
+        out.setdefault((round(cp.X, 3), round(cp.Y, 3)), []).append((round((box[2] - box[0]) * 10 / v.Scale, 3), c))
+    return out
+
+
+def _is_boss(c) -> bool:
+    """True when a circle in a view is the outside of a boss, not a hole: its cylindrical face looks away from the axis."""
+    for f in items(safe(lambda: c.ModelGeometry.Faces) or []):
+        if safe(lambda f=f: f.SurfaceType) not in (K.kCylinderSurface, K.kConeSurface):
+            continue
+        p, g = f.PointOnFace, f.Geometry
+        try:
+            base, axis = g.BasePoint, g.AxisVector
+            n = face_normal(f)
+        except Exception:
+            continue
+        v = [p.X - base.X, p.Y - base.Y, p.Z - base.Z]
+        along = v[0] * axis.X + v[1] * axis.Y + v[2] * axis.Z
+        radial = [v[0] - along * axis.X, v[1] - along * axis.Y, v[2] - along * axis.Z]
+        return sum(radial[i] * n[i] for i in range(3)) > 0
+    return False
+
+
+def _thread_map(md) -> dict:
+    """{face key: "M6x1-6H"} for the model's thread features (cosmetic threads drawn as extra edges)."""
+    out = {}
+    for tf in items(safe(lambda: md.ComponentDefinition.Features.ThreadFeatures) or []):
+        info = safe(lambda tf=tf: tf.ThreadInfo)
+        desig = safe(lambda: info.ThreadDesignation, "") or ""
+        cls = safe(lambda: info.Class, "") or ""
+        text = f"{desig}-{cls}" if cls else desig
+        for f in items(safe(lambda tf=tf: tf.ThreadedFace) or []):
+            out[safe(lambda f=f: f.TransientKey)] = text
+    return out
+
+
+def _curve_faces(c) -> list:
+    faces = safe(lambda: c.ModelGeometry.Faces)
+    return list(items(faces)) if faces is not None else []
+
+
+def _spline_holes(v) -> list:
+    """Holes drilled into curved faces show as splines, not circles: [(centre (x, y) cm, diameter mm, curve)]."""
+    out = []
+    seen: list = []
+    for c in _curves(v):
+        if _is_circle(c) or safe(lambda c=c: c.ProjectedCurveType) == K.get("kLineSegmentCurve2d"):
+            continue
+        box = _curve_box(c)
+        if box is None:
+            continue
+        w, h = box[2] - box[0], box[3] - box[1]
+        if w < 1e-4 or abs(w - h) > 0.06 * max(w, h):
+            continue
+        size = w * 10 / v.Scale                       # the hole's own face, not the round surface it was drilled into
+        cyl = next((f for f in _curve_faces(c) if safe(lambda f=f: f.SurfaceType) == K.kCylinderSurface
+                    and not _is_boss_face(f) and abs(f.Geometry.Radius * 20 - size) <= 0.1 * f.Geometry.Radius * 20), None)
+        if cyl is None:
+            continue
+        dia = cyl.Geometry.Radius * 20
+        centre = ((box[0] + box[2]) / 2, (box[1] + box[3]) / 2)
+        if any(abs(centre[0] - x) < 0.02 and abs(centre[1] - y) < 0.02 for x, y in seen):   # entry and exit project alike
+            continue
+        seen.append(centre)
+        out.append((centre, round(dia, 3), c))
+    return out
+
+
+def _note_score(sh, box, own=None) -> float:
+    """How bad a spot is for a note: overlaps with views, dimension text, other notes, the title block, the sheet edge."""
+    score = 0.0
+    W, H = sh.Width * 10, sh.Height * 10
+    if box[0] < 12 or box[1] < 12 or box[2] > W - 12 or box[3] > H - 12:
+        score += 100
+    for v in items(sh.DrawingViews):
+        if _overlap(box, _box(v), 0.0):
+            score += 30
+    for d in items(sh.DrawingDimensions):
+        tb = _text_box(d)
+        if tb and _overlap(box, tb, -1.5):
+            score += 20
+    for n_ in list(items(sh.DrawingNotes.HoleThreadNotes)) + list(items(sh.DrawingNotes.LeaderNotes)):
+        if own is not None and safe(lambda n_=n_: n_.Text.Origin.X) == safe(lambda: own.Text.Origin.X):
+            continue
+        rb = safe(lambda n_=n_: n_.Text.RangeBox)
+        if rb is not None and _overlap(box, _mm_box(rb), -1.5):
+            score += 20
+    tb = safe(lambda: sh.TitleBlock.RangeBox)
+    if tb is not None and _overlap(box, _mm_box(tb), 0):
+        score += 50
+    return score
+
+
+def _place_note(s: Session, sh, make, anchor_cm, view_box) -> object:
+    """Create a note with `make(point)` at the best of a ring of candidate spots around its anchor; keeps the first spot
+    if it is already clear. Leader notes ignore later moves, so each candidate is a fresh note."""
+    best = None
+    ax, ay = anchor_cm[0] * 10, anchor_cm[1] * 10
+    cand = [(view_box[2] + 14, ay)]
+    for dist in (14, 24, 36):
+        for k in range(16):
+            ang = math.radians(k * 22.5)
+            cand.append((ax + math.cos(ang) * (dist + (view_box[2] - view_box[0]) / 2 * abs(math.cos(ang))),
+                         ay + math.sin(ang) * (dist + (view_box[3] - view_box[1]) / 2 * abs(math.sin(ang)))))
+    for i, (x, y) in enumerate(cand):
+        note = safe(lambda: make(s.tg.CreatePoint2d(x * MM, y * MM)))
+        if note is None:
+            continue
+        rb = safe(lambda: note.Text.RangeBox)
+        if rb is None:
+            return note
+        sc = _note_score(sh, _mm_box(rb), own=note) + math.hypot(x - ax, y - ay) * 0.06
+        if best is None or sc < best[0]:
+            if best is not None:
+                safe(lambda b=best[1]: b.Delete())
+            best = (sc, note, (x, y))
+        else:
+            safe(lambda: note.Delete())
+        if i == 0 and sc < 5:                        # the usual spot is clear
+            break
+    return best[1] if best else None
+
+
+def _is_boss_face(f) -> bool:
+    p, g = f.PointOnFace, f.Geometry
+    try:
+        base, axis = g.BasePoint, g.AxisVector
+        n = face_normal(f)
+    except Exception:
+        return False
+    v = [p.X - base.X, p.Y - base.Y, p.Z - base.Z]
+    along = v[0] * axis.X + v[1] * axis.Y + v[2] * axis.Z
+    radial = [v[0] - along * axis.X, v[1] - along * axis.Y, v[2] - along * axis.Z]
+    return sum(radial[i] * n[i] for i in range(3)) > 0
+
+
+def _round_callouts(s: Session, view_name: str) -> dict:
+    """Replace ad-hoc diameter dimensions with proper callouts: one hole note per group of equal holes
+    ("6× Ø14 ... ON Ø110 PCD") and a diameter dimension for each size concentric with the view."""
+    sh = _sheet(s)
+    v = _view(s, view_name)
+    centres = _circles_by_centre(v)
+    if not centres and not _spline_holes(v):
+        return {"hole_groups": 0, "diameters": 0}
+    covered = {dia for rows in centres.values() for dia, _ in rows}
+    for d in list(items(sh.DrawingDimensions)):       # retrieved Ø dimensions are superseded below
+        if d.Type == K.kDiameterGeneralDimensionObject and any(abs(d.ModelValue * 10 - x) < 0.01 for x in covered):
+            safe(lambda d=d: d.Delete())
+    b = _box(v)
+    vc = ((b[0] + b[2]) / 2 * MM, (b[1] + b[3]) / 2 * MM)
+    gd = sh.DrawingDimensions.GeneralDimensions
+    concentric, holes = [], {}
+    for (cx, cy), rows in centres.items():
+        rows.sort(key=lambda t_: t_[0])
+        if math.hypot(cx - vc[0], cy - vc[1]) < 0.02 * max(v.Width, v.Height) + 0.02:
+            concentric += rows
+        elif not _is_boss(rows[0][1]):
+            holes.setdefault(rows[0][0], []).append(((cx, cy), rows[0][1]))
+    placed = 0
+    done: set = set()
+    half = max(b[2] - b[0], b[3] - b[1]) / 2
+    for i, (dia, c) in enumerate(sorted(concentric, key=lambda t_: -t_[0])):
+        if dia in done:
+            continue
+        done.add(dia)
+        ang = math.radians(200 + 24 * (len(done) - 1))      # lower-left: clear of the label and the view above
+        rr = half + 14 + 6 * (len(done) - 1)
+        tp = s.tg.CreatePoint2d(vc[0] + rr * MM * math.cos(ang), vc[1] + rr * MM * math.sin(ang))
+        if safe(lambda: gd.AddDiameter(tp, sh.CreateGeometryIntent(c)), None) is not None:
+            placed += 1
+    groups = 0
+    used_rows: list[float] = []
+    for k, (dia, members) in enumerate(sorted(holes.items(), key=lambda kv: kv[0])):
+        # hole-note text follows its leader, so the leader runs level, out of the rightmost hole of the group
+        free = [m for m in members if all(abs(m[0][1] - y_) > 0.8 for y_ in used_rows)] or members
+        (cx0, cy0), c = max(free, key=lambda m: m[0][0])
+        used_rows.append(cy0)
+        note = _place_note(s, sh, lambda tp, c=c: sh.DrawingNotes.HoleThreadNotes.Add(tp, c), (cx0, cy0), b)
+        if note is None:
+            continue
+        groups += 1
+        n = len(members)
+        md_ = safe(lambda: v.ReferencedDocumentDescriptor.ReferencedDocument)
+        tmap = _thread_map(md_) if md_ is not None else {}
+        thr = next((tmap[k] for k in (safe(lambda f=f: (safe(lambda: f.NativeObject) or f).TransientKey) for f in _curve_faces(c))
+                    if k in tmap), None)
+        if thr:                                        # a cosmetic thread: call out the thread, not the drill size
+            text = note.FormattedHoleThreadNote
+            size = (re.search(r"FontSize='([0-9.]+)'", text) or [None, "0.35"])[1]
+            tail = " THRU" if "THRU" in text.upper() else ""
+            safe(lambda: setattr(note, "FormattedHoleThreadNote",
+                                 f"<StyleOverride Font='Tahoma' FontSize='{size}'>{(str(n) + '× ') if n > 1 else ''}{thr}{tail}</StyleOverride>"))
+            continue
+        radii = [math.hypot(cx - vc[0], cy - vc[1]) for (cx, cy), _ in members]
+        pcd = ""
+        if n >= 3 and max(radii) - min(radii) < 0.01:
+            pcd = f" ON Ø{round(radii[0] * 20 / v.Scale, 2):g} PCD"
+        if n > 1 or pcd:
+            text = note.FormattedHoleThreadNote
+            size = (re.search(r"FontSize='([0-9.]+)'", text) or [None, "0.35"])[1]
+            wrap = lambda x: f"<StyleOverride Font='Tahoma' FontSize='{size}'>{x}</StyleOverride>"
+            head, sep, rest = text.partition("<Br/>")          # the PCD belongs with the hole size, on line 1
+            prefix = wrap(f"{n}× ") if n > 1 else ""
+            safe(lambda: setattr(note, "FormattedHoleThreadNote", prefix + head + (wrap(pcd) if pcd else "") + sep + rest))
+        tb = safe(lambda: note.Text.RangeBox)              # the text is centred on the leader end: move it clear
+        if tb is not None and tb.MinPoint.X * 10 < b[2] + 5:
+            dx = (b[2] + 5) * MM - tb.MinPoint.X
+            o = note.Text.Origin
+            safe(lambda: setattr(note.Text, "Origin", s.tg.CreatePoint2d(o.X + dx, o.Y)))
+    # cosmetic threads that aren't hole features, and holes that show as splines: leader notes
+    md = safe(lambda: v.ReferencedDocumentDescriptor.ReferencedDocument)
+    threads = _thread_map(md) if md is not None else {}
+    leaders = 0
+    for (cx, cy), rows in centres.items():
+        for dia, c in rows:
+            key = next((safe(lambda f=f: (f.NativeObject or f).TransientKey) for f in _curve_faces(c)
+                        if safe(lambda f=f: (f.NativeObject or f).TransientKey) in threads), None)
+            if key is None or any(abs(safe(lambda n_=n_: n_.Text.Origin.Y, -1) - cy) < 0.4 for n_ in items(sh.DrawingNotes.HoleThreadNotes)):
+                continue
+            n = len([1 for (x2, y2), rr in centres.items() if any(abs(d2 - dia) < 0.01 for d2, _ in rr)])
+            text = (f"{n}× " if n > 1 else "") + threads[key]
+            if _leader_note(s, sh, c, text, (cx, cy), b):
+                leaders += 1
+            break
+    for (cx, cy), dia, c in _spline_holes(v):
+        safe(lambda c=c: sh.Centermarks.Add(sh.CreateGeometryIntent(c)))
+        if _leader_note(s, sh, c, f"Ø{dia:g}", (cx, cy), b):
+            leaders += 1
+    return {"hole_groups": groups, "diameters": placed, "leader_notes": leaders}
+
+
+def _leader_note(s: Session, sh, curve, text: str, anchor_cm, view_box) -> bool:
+    def make(tp):
+        pts = s.to.CreateObjectCollection()
+        pts.Add(tp)
+        pts.Add(sh.CreateGeometryIntent(curve))
+        return sh.DrawingNotes.LeaderNotes.Add(pts, text)
+    return _place_note(s, sh, make, anchor_cm, view_box) is not None
+
+
+def _overall_dims(s: Session, view_name: str) -> int:
+    """Overall width and height from the view's outline edges, when not already dimensioned."""
+    sh = _sheet(s)
+    v = _view(s, view_name)
+    vert, horz = _straight_outline(v)
+    b = _box(v)
+    gd = sh.DrawingDimensions.GeneralDimensions
+    added = 0
+    have = _existing_values(sh)
+    have_linear = _existing_values(sh, linear_only=True)
+    if len(vert) >= 2:
+        lo, hi = min(vert, key=lambda t_: t_[0]), max(vert, key=lambda t_: t_[0])
+        val = (hi[0] - lo[0]) * 10 / v.Scale
+        if val > 0.01 and not _have(have, val):
+            tp = s.tg.CreatePoint2d((b[0] + b[2]) / 2 * MM, (b[1] - 24) * MM)
+            if safe(lambda: gd.AddLinear(tp, sh.CreateGeometryIntent(lo[1]), sh.CreateGeometryIntent(hi[1]),
+                                         K.kHorizontalDimensionType)) is not None:
+                added += 1
+    if len(horz) >= 2:
+        lo, hi = min(horz, key=lambda t_: t_[0]), max(horz, key=lambda t_: t_[0])
+        val = (hi[0] - lo[0]) * 10 / v.Scale
+        if val > 0.01 and not _have(have_linear, val):     # a bore of the same size is not a height
+            tp = s.tg.CreatePoint2d((b[0] - 24) * MM, (b[1] + b[3]) / 2 * MM)
+            if safe(lambda: gd.AddLinear(tp, sh.CreateGeometryIntent(lo[1]), sh.CreateGeometryIntent(hi[1]),
+                                         K.kVerticalDimensionType)) is not None:
+                added += 1
+    return added
+
+
+def _make_room_for_notes(s: Session) -> int:
+    """If a hole note's text lands on a neighbouring view to its right, slide that view further right
+    (it stays aligned with its parent), as long as it stays on the sheet and clear of other views."""
+    sh = _sheet(s)
+    moved = 0
+    W = sh.Width * 10
+    for n_ in items(sh.DrawingNotes.HoleThreadNotes):
+        rb = safe(lambda n_=n_: n_.Text.RangeBox)
+        if rb is None:
+            continue
+        nb = (rb.MinPoint.X * 10, rb.MinPoint.Y * 10, rb.MaxPoint.X * 10, rb.MaxPoint.Y * 10)
+        views = list(items(sh.DrawingViews))
+        for v in views:
+            b = _box(v)
+            if not _overlap(nb, b, 0.5) or b[0] < nb[0]:
+                continue
+            dx = nb[2] + 10 - b[0]
+            new_box = (b[0] + dx, b[1], b[2] + dx, b[3])
+            others = [_lbox(o) for o in views if o.Name != v.Name]
+            if new_box[2] <= W - 14 and not any(_overlap(new_box, o, 1) for o in others):
+                v.Position = s.tg.CreatePoint2d(v.Position.X + dx * MM, v.Position.Y)
+                moved += 1
+    return moved
+
+
+def _level_dims(s: Session, view_name: str, limit: int = 3) -> int:
+    """Dimension the steps inside a view's height (a flange's thickness, a shoulder) from the bottom edge."""
+    sh = _sheet(s)
+    v = _view(s, view_name)
+    _, horz = _straight_outline(v)
+    levels: dict = {}
+    for y, c in horz:
+        levels.setdefault(round(y, 3), c)
+    ys = sorted(levels)
+    if len(ys) < 3:
+        return 0
+    b = _box(v)
+    gd = sh.DrawingDimensions.GeneralDimensions
+    have = _existing_values(sh, linear_only=True)
+    added = 0
+    for y in ys[1:-1]:
+        val = round((y - ys[0]) * 10 / v.Scale, 3)
+        if added >= limit or val < 0.01 or _have(have, val):
+            continue
+        tp = s.tg.CreatePoint2d((b[2] + 12 + 9 * added) * MM, (ys[0] + y) / 2)
+        if safe(lambda: gd.AddLinear(tp, sh.CreateGeometryIntent(levels[ys[0]]), sh.CreateGeometryIntent(levels[y]),
+                                     K.kVerticalDimensionType)) is not None:
+            added += 1
+    return added
+
+
+def _mm_box(rb) -> tuple[float, float, float, float]:
+    return rb.MinPoint.X * 10, rb.MinPoint.Y * 10, rb.MaxPoint.X * 10, rb.MaxPoint.Y * 10
+
+
+def _clear_text_clashes(s: Session) -> int:
+    """Lift view labels clear of dimensions that landed on them, and slide hole notes clear of dimension text."""
+    sh = _sheet(s)
+    texts = [b for b in (_text_box(d) for d in items(sh.DrawingDimensions)) if b]
+    moved = 0
+    for v in items(sh.DrawingViews):
+        rb = safe(lambda v=v: v.Label.RangeBox)
+        if rb is None:
+            continue
+        box = _mm_box(rb)
+        hits = [t_ for t_ in texts if _overlap(box, t_, 0.5)]
+        if hits:
+            lift = max(t_[3] for t_ in hits) + 3.0 - box[1]
+            pos = v.Label.Position
+            if safe(lambda: setattr(v.Label, "Position", s.tg.CreatePoint2d(pos.X, pos.Y + lift * MM)) or True, False):
+                moved += 1
+    for n_ in items(sh.DrawingNotes.HoleThreadNotes):
+        rb = safe(lambda n_=n_: n_.Text.RangeBox)
+        if rb is None:
+            continue
+        box = _mm_box(rb)
+        hits = [t_ for t_ in texts if _overlap(box, t_, 0.5)]
+        if hits:
+            dx = max(t_[2] for t_ in hits) + 3.0 - box[0]
+            o = n_.Text.Origin
+            if safe(lambda n_=n_: setattr(n_.Text, "Origin", s.tg.CreatePoint2d(o.X + dx * MM, o.Y)) or True, False):
+                moved += 1
+    return moved
+
+
 def _tidy_dimension_text(s: Session) -> int:
     """Pull dimension text that landed outside the drawing area (or on the title block) back in."""
     sh = _sheet(s)
@@ -748,6 +1230,58 @@ def _tidy_dimension_text(s: Session) -> int:
 
 
 @tool("drawing")
+def add_projection_symbol(s: Session, x: float = 0.0, y: float = 0.0, third_angle: bool = True) -> dict:
+    """Put the projection-angle symbol on the sheet (a truncated cone and two circles, as AS 1100 and ISO call for).
+
+    x: sheet position in mm (0 = just left of the title block)
+    y: sheet position in mm
+    third_angle: false draws the first-angle symbol
+    """
+    d = s.drawing()
+    sh = _sheet(s)
+    name = "Third angle projection" if third_angle else "First angle projection"
+    defs = d.SketchedSymbolDefinitions
+    defn = next((o for o in items(defs) if o.Name == name), None)
+    if defn is None:
+        defn = defs.Add(name)
+        sk = defn.Edit()
+        pt = s.tg.CreatePoint2d
+        lines, circles = sk.SketchLines, sk.SketchCircles
+        cone_x, ring_x = (0.0, 2.1) if third_angle else (1.5, 0.5)     # the cone's narrow end is on the right in both
+        corners = [(cone_x, -0.5), (cone_x + 1.0, -0.25), (cone_x + 1.0, 0.25), (cone_x, 0.5)]
+        for (a, b), (c, e) in zip(corners, corners[1:] + corners[:1]):
+            lines.AddByTwoPoints(pt(a, b), pt(c, e))
+        circles.AddByCenterRadius(pt(ring_x, 0.0), 0.5)
+        circles.AddByCenterRadius(pt(ring_x, 0.0), 0.25)
+        defn.ExitEdit(True)
+    for old in list(items(sh.SketchedSymbols)):
+        if safe(lambda o=old: o.Definition.Name) == name:
+            safe(lambda o=old: o.Delete())
+    g = _region(sh)
+    px = x or (g["tb_left"] - 42.0)
+    py = y or (g["tb_top"] - 16.0 if g["tb_top"] > 30 else 20.0)
+    sym = sh.SketchedSymbols.Add(defn, s.tg.CreatePoint2d(px * MM, py * MM), 0.0, 1.0)
+    return {"symbol": name, "position_mm": [r(sym.Position.X * 10, 1), r(sym.Position.Y * 10, 1)]}
+
+
+@tool("drawing")
+def set_view_component_visibility(s: Session, view: str, occurrence: str, visible: bool = False) -> dict:
+    """Show or hide one component in a view, e.g. a large reference part that forces a small scale.
+
+    view: view name
+    occurrence: top-level component name
+    visible: false hides it
+    """
+    v = _view(s, view)
+    occs = v.ReferencedDocumentDescriptor.ReferencedDocument.ComponentDefinition.Occurrences
+    match = next((o for o in items(occs) if o.Name == occurrence), None)
+    if match is None:
+        raise InventorError(f"no component {occurrence!r}; there are {[o.Name for o in items(occs)][:30]}")
+    v.SetVisibility(match, bool(visible))
+    return {"view": view, "occurrence": occurrence, "visible": bool(visible)}
+
+
+@tool("drawing")
 def make_part_sheet(s: Session, model: str = "", views: str = "front,top,right,iso", scale: float = 0.0,
                     sheet_size: str = "A3", standard: str = "AS1100", dimensions: bool = True,
                     title: str = "", drawing_number: str = "", drawn_by: str = "", material: str = "") -> dict:
@@ -765,25 +1299,140 @@ def make_part_sheet(s: Session, model: str = "", views: str = "front,top,right,i
     third = standard.upper().replace(" ", "") == "AS1100"
     create_drawing(s, standard=standard, sheet_size=sheet_size)
     want = [w.strip().lower() for w in views.split(",") if w.strip()]
-    lay = _layout(s, md, want, third, scale)
-    steps: dict = {}
+    L = _extents(md)
+    base = _best_base(md, L)
+    fw, fh, _dp = _base_sizes(L, base, False)
+    rotate = fh > 1.4 * fw                          # long parts lie down (shafts and pins horizontal)
+    lay = _layout(s, md, want, third, scale, base=base, rotate=rotate)
+    steps: dict = {"base_orientation": base, "rotated": rotate}
+    if safe(lambda: _tilt_base(s, md), False):
+        steps["tilted_part"] = "main view turned square to the largest flat face"
+    cross = _cross_hole(s, md, base)
+    if os.environ.get("INVENTOR_FORGE_DEBUG"):
+        steps["cylinders"] = [(K.name_of(safe(lambda f=f: f.SurfaceType) or 0, "k"), safe(lambda f=f: [round(v, 3) for v in (f.Geometry.AxisVector.X, f.Geometry.AxisVector.Y, f.Geometry.AxisVector.Z)]),
+                               safe(lambda f=f: _is_boss_face(f))) for f in items(md.ComponentDefinition.SurfaceBodies.Item(1).Faces)
+                              if safe(lambda f=f: f.SurfaceType) != K.kPlaneSurface]
+    if cross is not None and "top" in want and dimensions:
+        try:
+            steps["section"] = _section_for(s, cross)
+        except Exception as e:  # noqa: BLE001 - the sheet is still usable without it
+            steps["section"] = None
+            steps["section_error"] = str(e)[:200]
+        if steps["section"]:
+            for m in lay["views"]:
+                if m["name"] == "TOP":
+                    m["name"] = "A"
     ortho = [m["name"] for m in lay["views"] if m["name"] != "ISOMETRIC"]
     if dimensions:
         steps["retrieved"] = sum(auto_dimension_view(s, vn, arrange=True).get("retrieved", 0) for vn in ortho)
         steps["hole_positions"] = safe(lambda: _hole_position_dims(s, "FRONT"), 0)
+        steps["callouts"] = safe(lambda: _round_callouts(s, "FRONT"), {})
+        steps["views_moved"] = safe(lambda: _make_room_for_notes(s), 0)
+        steps["overall"] = sum(safe(lambda vn=vn: _overall_dims(s, vn), 0) for vn in ortho)
+        steps["steps"] = sum(safe(lambda vn=vn: _level_dims(s, vn), 0) for vn in ortho)
+        if steps.get("section"):
+            steps["section_dims"] = safe(lambda: _level_dims(s, "A", limit=6), 0)
         steps["centermarks"] = safe(lambda: add_centermarks(s)["centermarks"], 0)
         sh = _sheet(s)
         safe(lambda: sh.DrawingDimensions.Arrange(s.collection(list(items(sh.DrawingDimensions.GeneralDimensions)))))
         steps["text_moved"] = safe(lambda: _tidy_dimension_text(s), 0)
     place_view_labels(s)
+    if dimensions:
+        steps["text_clashes_cleared"] = safe(lambda: _clear_text_clashes(s), 0)
+        safe(lambda: _make_room_for_notes(s))
     fields = {k: v for k, v in (("title", title or md.DisplayName.split(".")[0].upper()),
                                 ("drawing_number", drawing_number or safe(lambda: str(md.PropertySets.Item(
                                     "Design Tracking Properties").Item("Part Number").Value), "")),
                                 ("drawn_by", drawn_by), ("material", material or safe(
                                     lambda: md.ActiveMaterial.DisplayName, ""))) if v}
     set_title_block_field(s, fields)
+    if third:
+        safe(lambda: add_projection_symbol(s))
     return {"scale": _scale_text(lay["scale"]), "views": [m["name"] for m in lay["views"]], **steps,
             "qa": check_drawing(s)}
+
+
+def _cross_hole(s: Session, md, base: str):
+    """A hole lying across the main view (its axis square to the line of sight), which the views can't show: the
+    first such hole's (centre point, axis), else None."""
+    look = {"front": 2, "top": 1, "right": 0}[base]
+    for f in items(safe(lambda: md.ComponentDefinition.SurfaceBodies.Item(1).Faces) or []):
+        if safe(lambda f=f: f.SurfaceType) != K.kCylinderSurface or _is_boss_face(f):
+            continue
+        a = f.Geometry.AxisVector
+        comp = [abs(a.X), abs(a.Y), abs(a.Z)]
+        if comp[look] < 0.01:
+            bp = f.Geometry.BasePoint
+            return (bp.X, bp.Y, bp.Z), (a.X, a.Y, a.Z)
+    return None
+
+
+def _section_for(s: Session, cross) -> str:
+    """Replace the TOP view by section A-A cut along the cross hole's axis, so the hole shows in full."""
+    sh = _sheet(s)
+    front = _view(s, "FRONT")
+    (px, py, pz), axis = cross
+    p = front.ModelToSheetSpace(s.tg.CreatePoint(px, py, pz))
+    q = front.ModelToSheetSpace(s.tg.CreatePoint(px + axis[0], py + axis[1], pz + axis[2]))
+    horizontal = abs(q.X - p.X) >= abs(q.Y - p.Y)
+    l, b0, rr, t = _box(front)
+    top = next((v for v in items(sh.DrawingViews) if v.Name == "TOP"), None)
+    if horizontal:
+        offset = p.Y * 10 - (b0 + t) / 2
+        tx, ty = (top.Position.X * 10, top.Position.Y * 10) if top is not None else ((l + rr) / 2, t + 60)
+    else:
+        offset = p.X * 10 - (l + rr) / 2
+        tx, ty = (top.Position.X * 10, top.Position.Y * 10) if top is not None else (rr + 60, (b0 + t) / 2)
+    if top is not None:
+        top.Delete()
+    add_section_view(s, "FRONT", tx, ty, cut="horizontal" if horizontal else "vertical", offset=offset, label="A")
+    return "A-A"
+
+
+def _tilt_base(s: Session, md) -> bool:
+    """A part whose largest flat face isn't square to the axes (often an imported STEP part) gets its main view looking
+    straight at that face, with its longest straight edge level. True if the view was turned."""
+    faces = [f for f in items(safe(lambda: md.ComponentDefinition.SurfaceBodies.Item(1).Faces) or [])
+             if safe(lambda f=f: f.SurfaceType) == K.kPlaneSurface]
+    if not faces:
+        return False
+    big = max(faces, key=lambda f: f.Evaluator.Area)
+    n = face_normal(big)
+    if max(abs(v) for v in n) > 0.999:
+        return False
+    edges = [e for e in items(big.Edges) if safe(lambda e=e: e.GeometryType) == K.kLineSegmentCurve]
+    if edges:
+        e = max(edges, key=lambda e: e.StartVertex.Point.DistanceTo(e.StopVertex.Point))
+        a, b = e.StartVertex.Point, e.StopVertex.Point
+        along = [b.X - a.X, b.Y - a.Y, b.Z - a.Z]
+    else:
+        along = [1, 0, 0]
+    up = [n[1] * along[2] - n[2] * along[1], n[2] * along[0] - n[0] * along[2], n[0] * along[1] - n[1] * along[0]]
+    ln = math.sqrt(sum(v * v for v in up)) or 1
+    up = [v / ln for v in up]
+    v = _view(s, "FRONT")
+    cam = v.Camera
+    tgt = cam.Target
+    dist = max(tgt.DistanceTo(cam.Eye), 100.0)
+    cam.Eye = s.tg.CreatePoint(tgt.X + n[0] * dist, tgt.Y + n[1] * dist, tgt.Z + n[2] * dist)
+    cam.UpVector = s.tg.CreateUnitVector(*up)
+    cam.ApplyWithoutTransition()
+    return True
+
+
+def _ga_sheet_size(s: Session, md, rows: int) -> str:
+    """Smallest sheet (A3, A2, A1) that reaches the largest standard scale for the GA views."""
+    L = _extents(md)
+    need_w, need_h = L[0] + L[2], L[1] + L[2]
+    sizes = {"A3": (420, 297), "A2": (594, 420), "A1": (841, 594)}
+    best = {}
+    for name, (W, H) in sizes.items():
+        if name == "A1" and rows <= 20 and best:
+            pass
+        avail_w, avail_h = (W - 60) * 0.66 - 22, H - 80 - 22 - 28
+        best[name] = _pick_scale(need_w, need_h, avail_w, avail_h)
+    top = max(best.values())
+    return next(n for n in ("A3", "A2", "A1") if best[n] == top)
 
 
 @tool("drawing")
@@ -791,11 +1440,16 @@ def make_assembly_sheet(s: Session, model: str = "", scale: float = 0.0, sheet_s
                         standard: str = "AS1100", title: str = "", drawing_number: str = "",
                         drawn_by: str = "") -> dict:
     """One-shot general-arrangement (GA) drawing of an assembly: FRONT + TOP, shaded ISOMETRIC, parts
-    list above the title block, balloons, labels, title block, QA."""
+    list above the title block, balloons, labels, title block, QA.
+
+    sheet_size: A3, A2, A1 or auto (the smallest sheet that reaches the largest standard scale)
+    """
     md = _model_doc(s, model)
     if s.kind(md) != "assembly":
         raise InventorError("make_assembly_sheet needs an assembly")
     third = standard.upper().replace(" ", "") == "AS1100"
+    if sheet_size.lower() == "auto":
+        sheet_size = _ga_sheet_size(s, md, safe(lambda: md.ComponentDefinition.Occurrences.Count, 0))
     create_drawing(s, standard=standard, sheet_size=sheet_size)
     lay = _layout(s, md, ["front", "top", "iso"], third, scale)
     pl = add_parts_list(s, "FRONT")
@@ -815,8 +1469,122 @@ def make_assembly_sheet(s: Session, model: str = "", scale: float = 0.0, sheet_s
     place_view_labels(s)
     set_title_block_field(s, {k: v for k, v in (("title", title or md.DisplayName.split(".")[0].upper()),
                                                 ("drawing_number", drawing_number), ("drawn_by", drawn_by)) if v})
-    return {"scale": _scale_text(lay["scale"]), "parts_list_rows": pl["rows"], "balloons": bl["balloons"],
+    if third:
+        safe(lambda: add_projection_symbol(s))
+    return {"scale": _scale_text(lay["scale"]), "sheet": sheet_size, "parts_list_rows": pl["rows"], "balloons": bl["balloons"],
             "qa": check_drawing(s)}
+
+
+@tool("drawing", mutates=False)
+def list_drawing_dimensions(s: Session) -> dict:
+    """Dimensions on the active sheet: index (for the tools below), value, text, tolerance and text position."""
+    sh = _sheet(s)
+    rows = []
+    for i, d in enumerate(items(sh.DrawingDimensions), 1):
+        o = safe(lambda d=d: d.Text.Origin)
+        rows.append({"index": i, "value_mm": safe(lambda d=d: r(d.ModelValue * 10, 3)),
+                     "text": safe(lambda d=d: d.Text.Text, ""),
+                     "tolerance": K.name_of(safe(lambda d=d: d.Tolerance.ToleranceType, 0), "k"),
+                     "at_mm": [r(o.X * 10, 1), r(o.Y * 10, 1)] if o is not None else None})
+    return {"dimensions": rows, "count": len(rows)}
+
+
+def _dimension(s: Session, index: int):
+    dims = _sheet(s).DrawingDimensions
+    if not 1 <= int(index) <= dims.Count:
+        raise InventorError(f"dimension {index} out of range 1..{dims.Count} (see list_drawing_dimensions)")
+    return dims.Item(int(index))
+
+
+@tool("drawing")
+def set_dimension_tolerance(s: Session, index: int, upper: float | None = None, lower: float | None = None,
+                            symmetric: float | None = None, hole_fit: str = "", shaft_fit: str = "") -> dict:
+    """Tolerance a drawing dimension: symmetric (±), deviation (upper/lower, mm) or an ISO fit such as hole_fit="H7"
+    (a hole), shaft_fit="g6" (a shaft), or both for a fit."""
+    d = _dimension(s, index)
+    tol = d.Tolerance
+    if symmetric is not None:
+        tol.SetToSymmetric(float(symmetric) * MM)
+    elif upper is not None and lower is not None:
+        tol.SetToDeviation(float(upper) * MM, float(lower) * MM)
+    elif hole_fit or shaft_fit:
+        tol.SetToFits(K.kLimitsFitsStackedTolerance, hole_fit, shaft_fit)
+    else:
+        raise InventorError("give symmetric, upper + lower, or hole_fit / shaft_fit")
+    return {"text": safe(lambda: d.Text.Text, ""), "tolerance": K.name_of(tol.ToleranceType, "k")}
+
+
+@tool("drawing")
+def move_dimension_text(s: Session, index: int, x: float, y: float) -> dict:
+    """Move a dimension's text to (x, y) sheet mm."""
+    d = _dimension(s, index)
+    d.Text.Origin = s.tg.CreatePoint2d(x * MM, y * MM)
+    return {"moved": index}
+
+
+@tool("drawing")
+def delete_drawing_dimension(s: Session, index: int) -> dict:
+    """Delete a drawing dimension by index (see list_drawing_dimensions)."""
+    d = _dimension(s, index)
+    text = safe(lambda: d.Text.Text, "")
+    d.Delete()
+    return {"deleted": text}
+
+
+@tool("drawing")
+def add_surface_finish(s: Session, view: str, edge: int, roughness: str = "3.2", x: float = 0.0, y: float = 0.0,
+                       occurrence: str = "") -> dict:
+    """Surface texture symbol (machining required) on a model edge in a view; roughness is Ra in µm."""
+    sh = _sheet(s)
+    v = _view(s, view)
+    c = _curves(v, _model_entity(s, v, "edge", edge, occurrence))
+    if not c:
+        raise InventorError(f"edge {edge} is not visible in view {v.Name}")
+    mp = _pt(c[0])
+    if not (x or y):
+        x, y = mp.X * 10 + 12, mp.Y * 10 + 12
+    pts = s.collection([s.tg.CreatePoint2d(x * MM, y * MM), sh.CreateGeometryIntent(c[0])])
+    sym = sh.SurfaceTextureSymbols.Add(pts, K.kMaterialRemovalRequiredSurfaceType, MaximumRoughness=str(roughness))
+    return {"symbol": True, "ra": str(roughness), "count": sh.SurfaceTextureSymbols.Count, "name": safe(lambda: sym.Type)}
+
+
+@tool("drawing")
+def add_hole_table(s: Session, view: str, x: float = 0.0, y: float = 0.0) -> dict:
+    """Hole table for every hole in a view, positioned with its top-left at (x, y) sheet mm (default above the
+    title block). Needs a datum in the view; the table is returned as text rows."""
+    sh = _sheet(s)
+    v = _view(s, view)
+    if not (x or y):
+        g = _region(sh)
+        x, y = g["tb_left"], g["tb_top"] + 60
+    if not safe(lambda: v.HasOriginIndicator, False):      # the table measures hole positions from this datum
+        vert, horz = _straight_outline(v)
+        if not vert:
+            raise InventorError("the view has no straight edge to place the hole table's origin on")
+        c = min(vert, key=lambda t_: t_[0])[1]
+        pt = c.StartPoint
+        end = safe(lambda: c.EndPoint)
+        intent = K.kStartPointIntent if pt is not None and (end is None or pt.Y <= end.Y) else K.kEndPointIntent
+        v.CreateOriginIndicator(sh.CreateGeometryIntent(c, intent))
+    ht = sh.HoleTables.Add(v, s.tg.CreatePoint2d(x * MM, y * MM))
+    return {"rows": ht.HoleTableRows.Count}
+
+
+@tool("drawing")
+def add_revision_table(s: Session, x: float = 0.0, y: float = 0.0) -> dict:
+    """Revision table on the active sheet; default placement is above the title block."""
+    sh = _sheet(s)
+    if not (x or y):
+        g = _region(sh)
+        x, y = g["W"] - 14, g["tb_top"] + 40
+    rt = sh.RevisionTables.Add(s.tg.CreatePoint2d(x * MM, y * MM))
+    rb = rt.RangeBox                                     # keep the whole table on the sheet
+    over = rb.MaxPoint.X * 10 - (sh.Width * 10 - 12)
+    if over > 0:
+        rt.Position = s.tg.CreatePoint2d(rt.Position.X - over * MM, rt.Position.Y)
+    rb = rt.RangeBox
+    return {"rows": rt.RevisionTableRows.Count,
+            "box_mm": [r(rb.MinPoint.X * 10, 1), r(rb.MinPoint.Y * 10, 1), r(rb.MaxPoint.X * 10, 1), r(rb.MaxPoint.Y * 10, 1)]}
 
 
 # --------------------------------------------------------------------------- QA, render, PDF
@@ -831,6 +1599,9 @@ def _text_box(dim):
         w, h = h, w
     x, y = o.X * 10, o.Y * 10
     return (x - w / 2, y - h / 2, x + w / 2, y + h / 2)
+
+
+BALLOON_GAP = 15.0          # mm between balloon centres
 
 
 def _overlap(a, b, pad=0.0) -> bool:
@@ -868,6 +1639,30 @@ def check_drawing(s: Session) -> dict:
             for n1, b1 in boxes:
                 if _overlap(pb, b1, 1):
                     issues.append(f"[{sh.Name}] parts list overlaps view {n1}")
+        tables = [("revision table", t_) for t_ in items(sh.RevisionTables)] + [("hole table", t_) for t_ in items(sh.HoleTables)]
+        for tname, t_ in tables:
+            rb = t_.RangeBox
+            if rb.MaxPoint.X * 10 > W - 5 or rb.MinPoint.X * 10 < 5 or rb.MinPoint.Y * 10 < 5 or rb.MaxPoint.Y * 10 > H - 5:
+                issues.append(f"[{sh.Name}] {tname} runs off the sheet")
+            tb2 = (rb.MinPoint.X * 10, rb.MinPoint.Y * 10, rb.MaxPoint.X * 10, rb.MaxPoint.Y * 10)
+            for n1, b1 in boxes:
+                if _overlap(tb2, b1, 1):
+                    issues.append(f"[{sh.Name}] {tname} overlaps view {n1}")
+        spots = [(safe(lambda b_=b_: b_.Position.X * 10), safe(lambda b_=b_: b_.Position.Y * 10)) for b_ in items(sh.Balloons)]
+        spots = [p for p in spots if p[0] is not None]
+        crowded = sum(1 for i, a_ in enumerate(spots) for b_ in spots[i + 1:] if math.hypot(a_[0] - b_[0], a_[1] - b_[1]) < 11)
+        if crowded:
+            issues.append(f"[{sh.Name}] {crowded} pair(s) of balloons overlap")
+        for n_ in items(sh.DrawingNotes.HoleThreadNotes):
+            rb = safe(lambda n_=n_: n_.Text.RangeBox)
+            if rb is None:
+                continue
+            nb = (rb.MinPoint.X * 10, rb.MinPoint.Y * 10, rb.MaxPoint.X * 10, rb.MaxPoint.Y * 10)
+            for vn, vb in [(v.Name, _box(v)) for v in views]:
+                if _overlap(nb, vb, 0.5):
+                    issues.append(f"[{sh.Name}] hole note sits on view {vn}")
+            if nb[2] > W - 12:
+                issues.append(f"[{sh.Name}] hole note runs off the sheet")
         off = 0
         on_tb = 0
         for dim in items(sh.DrawingDimensions):
@@ -889,6 +1684,14 @@ def check_drawing(s: Session) -> dict:
         clash = [(a[0], b[0]) for i, a in enumerate(texts) for b in texts[i + 1:] if _overlap(a[1], b[1], 0.3)]
         if clash:
             issues.append(f"[{sh.Name}] overlapping dimension texts: " + ", ".join(f"{a} / {b}" for a, b in clash[:6]))
+        for v in views:
+            lb = safe(lambda v=v: v.Label.RangeBox)
+            if lb is not None and any(_overlap(_mm_box(lb), t_[1], 0.3) for t_ in texts):
+                issues.append(f"[{sh.Name}] the label of view {v.Name} sits on a dimension")
+        for n_ in items(sh.DrawingNotes.HoleThreadNotes):
+            nb_ = safe(lambda n_=n_: n_.Text.RangeBox)
+            if nb_ is not None and any(_overlap(_mm_box(nb_), t_[1], 0.3) for t_ in texts):
+                issues.append(f"[{sh.Name}] a hole note sits on a dimension")
         if on_tb:
             issues.append(f"[{sh.Name}] {on_tb} dimension text(s) on the title block")
         # dimensions per view (by attachment)
@@ -931,6 +1734,22 @@ def check_drawing(s: Session) -> dict:
         for v in views:
             if not safe(lambda v=v: v.ShowLabel, False):
                 issues.append(f"[{sh.Name}] view {v.Name} has no label")
+    for sh in items(d.Sheets):
+        views = list(items(sh.DrawingViews))
+        model = safe(lambda: views[0].ReferencedDocumentDescriptor.ReferencedDocument) if views else None
+        if model is None or s.kind(model) != "part" or sh.DrawingDimensions.Count == 0:
+            continue
+        rb = safe(lambda: model.ComponentDefinition.RangeBox)
+        if rb is None:
+            continue
+        all_values = _existing_values(sh)
+        linear = _existing_values(sh, linear_only=True)
+        sizes = {"X": (rb.MaxPoint.X - rb.MinPoint.X) * 10, "Y": (rb.MaxPoint.Y - rb.MinPoint.Y) * 10,
+                 "Z": (rb.MaxPoint.Z - rb.MinPoint.Z) * 10}
+        for axis, mm in sizes.items():
+            round_outline = any(a != axis and abs(v - mm) < 0.05 for a, v in sizes.items())
+            if not _have(all_values if round_outline else linear, mm, 0.05):
+                issues.append(f"[{sh.Name}] overall size {mm:g} mm ({axis}) has no dimension")
     for key in ("title", "drawing_number", "drawn_by"):
         setname, prop = TB_FIELDS[key]
         if not safe(lambda: str(d.PropertySets.Item(setname).Item(prop).Value).strip(), ""):

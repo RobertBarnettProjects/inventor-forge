@@ -82,3 +82,95 @@ def list_tools(s: Session, group: str = "") -> dict:
             continue
         out.setdefault(t.group, []).append(t.name)
     return {"groups": out, "count": sum(len(v) for v in out.values())}
+
+
+def _pdf_strings(content: bytes) -> list[str]:
+    """Lines of text shown by Tj / TJ / ' operators in a PDF content stream (simple fonts). A move with a vertical
+    offset (Td, TD, T*, ') starts a new line; a horizontal move inside a line adds a space when it is a large one."""
+    import re as _re
+    tok_rx = _re.compile(rb"\((?:\\.|[^\\)])*\)|(-?\d*\.?\d+)\s+(-?\d*\.?\d+)\s+T[dD]|T\*|'|\bTJ\b|\bTj\b", _re.S)
+    unesc = _re.compile(rb"\\([0-7]{1,3}|.)", _re.S)
+    names = {b"n": b"\n", b"r": b"", b"t": b"\t", b"b": b"", b"f": b""}
+    tm_rx = _re.compile(rb"(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+Tm")
+    size_rx = _re.compile(rb"/\S+\s+(-?[\d.]+)\s+Tf")
+    if not tm_rx.search(content):          # no absolute placement: one line per text object, in drawing order
+        out = []
+        for block in _re.findall(rb"BT(.*?)ET", content, _re.S):
+            line = "".join(unesc.sub(lambda q: bytes([int(q.group(1), 8) & 255]) if q.group(1)[:1].isdigit()
+                                     else names.get(q.group(1), q.group(1)), m.group(0)[1:-1]).decode("latin-1")
+                           for m in tok_rx.finditer(block) if m.group(0).startswith(b"("))
+            if line.strip():
+                out.append(line)
+        return out
+    pieces = []            # (y, x, text, font size): programs that place every letter on its own are joined up again
+    order = 0
+    for block in _re.findall(rb"BT(.*?)ET", content, _re.S):
+        tm = tm_rx.search(block)
+        x, y = (float(tm.group(5)), float(tm.group(6))) if tm else (0.0, 0.0)
+        fs = size_rx.search(block)
+        size = float(fs.group(1)) if fs else 10.0
+        order += 1
+        for m in tok_rx.finditer(block):
+            tok = m.group(0)
+            if tok.startswith(b"("):
+                raw = unesc.sub(lambda q: bytes([int(q.group(1), 8) & 255]) if q.group(1)[:1].isdigit()
+                                else names.get(q.group(1), q.group(1)), tok[1:-1])
+                pieces.append((y, x, raw.decode("latin-1"), size))
+                x += len(raw) * size * 0.5
+            elif m.group(1) is not None:
+                x += float(m.group(1))
+                y += float(m.group(2))
+            elif tok in (b"T*", b"'"):
+                y -= size * 1.2
+    lines: dict = {}
+    for y, x, text, size in pieces:
+        key = next((k for k in lines if abs(k - y) < 0.3 * max(size, 1)), y)
+        lines.setdefault(key, []).append((x, text, size))
+    out = []
+    for key in sorted(lines, reverse=True):
+        row = sorted(lines[key])
+        text, end = "", None
+        for x, t_, size in row:
+            if end is not None and x - end > size * 0.9:      # a real gap: a separate word or column
+                text += "  "
+            text += t_
+            end = x + len(t_) * size * 0.55
+        out.append(text)
+    return out
+
+
+@tool("system", mutates=False, com=False)
+def read_pdf_text(s: Session, path: str, max_chars: int = 20000) -> dict:
+    """Text of a PDF (datasheets, standards, drawings from others) using only Python's standard library. Works for most
+    PDFs written with simple fonts; scanned pages and some embedded fonts give little or no text.
+
+    max_chars: cut the text off after this many characters
+    """
+    import os
+    import re as _re
+    import zlib
+    if not os.path.exists(path):
+        from ..com import InventorError
+        raise InventorError(f"no such file: {path}")
+    data = open(path, "rb").read()
+    texts = []
+    for m in _re.finditer(rb"<<(.*?)>>\s*stream\r?\n", data, _re.S):
+        start = m.end()
+        end = data.find(b"endstream", start)
+        if end < 0:
+            continue
+        body = data[start:end]
+        if b"FlateDecode" in m.group(1):
+            try:
+                body = zlib.decompress(body)
+            except zlib.error:
+                try:
+                    body = zlib.decompressobj().decompress(body)
+                except zlib.error:
+                    continue
+        elif b"/Filter" in m.group(1):
+            continue
+        texts += _pdf_strings(body)
+    text = "\n".join(t for t in texts if t.strip())
+    pages = len(_re.findall(rb"/Type\s*/Page[^s]", data))
+    return {"pages": pages, "characters": len(text), "text": text[:max_chars], "truncated": len(text) > max_chars}

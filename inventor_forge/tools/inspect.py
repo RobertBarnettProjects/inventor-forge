@@ -351,7 +351,13 @@ def set_parameter(s: Session, name: str, expression: str) -> dict:
 def add_parameter(s: Session, name: str, expression: str, units: str = "mm", comment: str = "") -> dict:
     """Add a user parameter (units: mm, deg, ul for unitless, kg, N, MPa...)."""
     ps = _params(s)
-    p = ps.UserParameters.AddByExpression(name, str(expression), units)
+    try:
+        p = ps.UserParameters.AddByExpression(name, str(expression), units)
+    except Exception as e:
+        if type(e).__name__ != "com_error":
+            raise
+        raise InventorError(f"Inventor refused parameter {name!r} = {expression!r}. Names that are also units (H, T, N, m, "
+                            "dK...) or already in use are rejected: try a longer name such as Height") from e
     if comment:
         safe(lambda: setattr(p, "Comment", comment))
     return {"parameter": _param_row(p)}

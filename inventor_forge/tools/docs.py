@@ -1,7 +1,11 @@
 """Connection, documents, views, screenshots, export, undo groups."""
 from __future__ import annotations
 
+import contextlib
+import glob
 import os
+import tempfile
+import threading
 import time
 
 from ..com import InventorError, K, items, safe
@@ -43,12 +47,75 @@ def _doc_info(s: Session, d) -> dict:
 
 
 @tool("session", mutates=False)
-def connect(s: Session) -> dict:
-    """Attach to the running Inventor (or start it) and report the version and open documents."""
+def connect(s: Session, private: bool = False) -> dict:
+    """Attach to the running Inventor (or start it) and report the version, project and open documents.
+
+    private: start a separate Inventor process just for this session, leaving any Inventor the user has open
+      untouched (close it with close_private_inventor). Use it for long jobs and whenever the user is working.
+    """
+    from .. import uidrive as U
+    cleaned = U.end_solvers(U.orphaned_solvers()) if private else 0      # left by an Inventor that crashed or was closed
+    app = s.start_private() if private else s.app
+    out = {"version": safe(lambda: app.SoftwareVersion.DisplayVersion, "?"),
+           "product": safe(lambda: app.SoftwareVersion.ProductName, "Inventor"),
+           "private": s.private, "process": s.pid, "orphaned_solvers_ended": cleaned,
+           "project": safe(lambda: app.DesignProjectManager.ActiveDesignProject.FullFileName, ""),
+           "documents": [_doc_info(s, d) for d in items(app.Documents) if safe(lambda d=d: d.Views.Count, 1)]}
+    others = [p for p in U.pids_named("Inventor.exe") if p != s.pid]
+    if others:
+        out["other_inventors"] = others
+        if not s.private:
+            out["warning"] = ("more than one Inventor is running and this attached to the first one registered, which "
+                              "may be the user's; connect(private=true) gives this session its own")
+    return out
+
+
+@tool("session")
+def close_private_inventor(s: Session) -> dict:
+    """Close the separate Inventor started by connect(private=true), discarding anything unsaved in it.
+    Never touches an Inventor this session did not start."""
+    if not s.private:
+        raise InventorError("this session did not start a private Inventor, so there is nothing to close")
+    from .. import uidrive as U
+    app, pid = s.app, s.pid
+    app.SilentOperation = True
+    for d in list(items(app.Documents.VisibleDocuments)):
+        safe(lambda d=d: d.Close(True))
+    s._app, s.private, s.pid, s._current = None, False, None, None
+    app.Quit()
+    import time
+    t0 = time.time()
+    while pid in U.pids_named("Inventor.exe") and time.time() - t0 < 60:
+        time.sleep(0.5)
+    return {"closed": pid, "solvers_ended": U.end_orphaned_solvers(pid)}
+
+
+@tool("session", mutates=False)
+def list_projects(s: Session) -> dict:
+    """Inventor projects known to this machine and which one is active."""
+    m = s.app.DesignProjectManager
+    active = safe(lambda: m.ActiveDesignProject.FullFileName, "")
+    return {"active": active, "projects": [{"name": p.Name, "file": p.FullFileName, "workspace": safe(lambda p=p: p.WorkspacePath, ""),
+                                            "active": p.FullFileName == active} for p in items(m.DesignProjects)]}
+
+
+@tool("session")
+def set_active_project(s: Session, project: str) -> dict:
+    """Switch Inventor's active project (by name or .ipj path). Inventor only allows this with no documents open.
+
+    project: project name or full path to the .ipj file
+    """
     app = s.app
-    return {"version": safe(lambda: app.SoftwareVersion.DisplayVersion, "?"),
-            "product": safe(lambda: app.SoftwareVersion.ProductName, "Inventor"),
-            "documents": [_doc_info(s, d) for d in items(app.Documents) if safe(lambda d=d: d.Views.Count, 1)]}
+    if safe(lambda: app.Documents.VisibleDocuments.Count, 0):
+        raise InventorError("Inventor can only change project with no documents open; close them first")
+    m = app.DesignProjectManager
+    p = safe(lambda: m.DesignProjects.ItemByName(project))
+    if p is None and os.path.exists(project):
+        p = m.DesignProjects.AddExisting(os.path.abspath(project))
+    if p is None:
+        raise InventorError(f"no project {project!r} (see list_projects)")
+    p.Activate(True)
+    return {"active": m.ActiveDesignProject.FullFileName}
 
 
 @tool("session", mutates=False)
@@ -87,8 +154,9 @@ def create_part(s: Session, name: str = "", sheet_metal: bool = False) -> dict:
     """
     app = s.app
     sub = SHEET_METAL_SUBTYPE if sheet_metal else None
+    tpl = s.stock_template("Sheet Metal (mm).ipt" if sheet_metal else "Standard (mm).ipt")
     try:
-        tpl = app.FileManager.GetTemplateFile(K.kPartDocumentObject, K.kMetricSystemOfMeasure,
+        tpl = tpl or app.FileManager.GetTemplateFile(K.kPartDocumentObject, K.kMetricSystemOfMeasure,
                                               K.kDefault_DraftingStandard, sub) if sub else \
             app.FileManager.GetTemplateFile(K.kPartDocumentObject, K.kMetricSystemOfMeasure)
     except Exception:
@@ -108,7 +176,7 @@ def create_assembly(s: Session, name: str = "") -> dict:
     """New metric assembly document and make it active."""
     app = s.app
     try:
-        tpl = app.FileManager.GetTemplateFile(K.kAssemblyDocumentObject, K.kMetricSystemOfMeasure)
+        tpl = s.stock_template("Standard (mm).iam") or app.FileManager.GetTemplateFile(K.kAssemblyDocumentObject, K.kMetricSystemOfMeasure)
     except Exception:
         tpl = ""
     d = app.Documents.Add(K.kAssemblyDocumentObject, tpl, True)
@@ -217,6 +285,116 @@ def close_document(s: Session, save: bool = False, name: str = "") -> dict:
     return {"closed": label, "saved": save}
 
 
+@contextlib.contextmanager
+def _silent(s: Session):
+    """Inventor's silent mode: translators and prompts take their defaults instead of opening a dialog
+    that would wait forever for a person."""
+    app = s.app
+    was = safe(lambda: app.SilentOperation, False)
+    app.SilentOperation = True
+    try:
+        yield
+    finally:
+        safe(lambda: setattr(app, "SilentOperation", was))
+
+
+class _Watchdog:
+    def __init__(self):
+        self.cancelled: list[str] = []
+        self.stop = threading.Event()
+
+
+@contextlib.contextmanager
+def _dialog_watchdog(s: Session, grace: float = 4.0):
+    """While a translator runs, cancel any new modal dialog from Inventor after a few seconds, so a
+    prompt can never block an unattended session. Uses window messages only, no mouse or keyboard."""
+    import win32gui
+    import win32process
+
+    from .. import uidrive as U
+    pid = win32process.GetWindowThreadProcessId(s.app.MainFrameHWND)[1]
+    existing = set(U.process_windows(pid))
+    dog = _Watchdog()
+
+    def watch():
+        seen: dict[int, float] = {}
+        while not dog.stop.wait(0.5):
+            for h in U.process_windows(pid):
+                try:
+                    if h in existing or win32gui.GetClassName(h) != "#32770":
+                        continue
+                    first = seen.setdefault(h, time.time())
+                    if time.time() - first >= grace:
+                        dog.cancelled.append(win32gui.GetWindowText(h) or "dialog")
+                        U.click(U.find(h, cid=2))
+                        seen.pop(h, None)
+                        existing.add(h)
+                except Exception:
+                    continue
+    th = threading.Thread(target=watch, daemon=True)
+    th.start()
+    try:
+        yield dog
+    finally:
+        dog.stop.set()
+        th.join(2)
+
+
+# the export settings the DWG/DXF translator asks for in its dialog when it has no configuration file
+DWG_EXPORT_INI = """[EXPORT SELECT OPTIONS]
+AUTOCAD VERSION=AutoCAD 2018
+CREATE AUTOCAD MECHANICAL=No
+USE TRANSMITTAL=No
+USE CUSTOMIZE=No
+CUSTOMIZE FILE=
+CUSTOMIZE LAYER FILE=
+[EXPORT PROPERTIES]
+SELECTED PROPERTIES=
+[EXPORT DESTINATION]
+SPACE=Model
+SCALING=Geometry
+ALL SHEETS=Yes
+MAPPING=MapsBest
+MODEL GEOMETRY ONLY=No
+EXPLODE DIMENSIONS=No
+SYMBOLS ARE BLOCKED=Yes
+AUTO-REDRAW=No
+[EXPORT LINE TYPE & LINE SCALE]
+LINE TYPE FILE=
+CONTINUOUS THROUGH GAPS=Yes
+LINE SCALE=1.0
+"""
+
+
+DWG_TRANSLATORS = {"DWG": "{C24E3AC2-122E-11D5-8E91-0010B541CD80}", "DXF": "{C24E3AC4-122E-11D5-8E91-0010B541CD80}"}
+
+
+def _translate_drawing(s: Session, d, path: str, fmt: str) -> None:
+    """A drawing as AutoCAD DWG / DXF through the translator add-in."""
+    app = s.app
+    tr = app.ApplicationAddIns.ItemById(DWG_TRANSLATORS[fmt])
+    if not tr.Activated:
+        tr.Activate()
+    ctx = app.TransientObjects.CreateTranslationContext()
+    ctx.Type = K.kFileBrowseIOMechanism
+    opts = app.TransientObjects.CreateNameValueMap()
+    medium = app.TransientObjects.CreateDataMedium()
+    medium.FileName = path
+    ini = os.path.join(tempfile.gettempdir(), "inventor_forge_dwg_export.ini")
+    with open(ini, "w", encoding="utf-8") as f:
+        f.write(DWG_EXPORT_INI)
+    opts.Add("Export_Acad_IniFile", ini)
+    with _silent(s), _dialog_watchdog(s) as dog:
+        try:
+            tr.SaveCopyAs(d, ctx, opts, medium)
+        except Exception:
+            if not dog.cancelled:
+                raise
+    if dog.cancelled:
+        raise InventorError(f"Inventor opened an options dialog for {fmt} export instead of writing the file "
+                            f"({dog.cancelled}); it was cancelled so the session doesn't hang")
+
+
 @tool("documents")
 def export_document(s: Session, path: str, format: str = "") -> dict:
     """Export a copy of the active document: STEP, IGES, STL, SAT, Parasolid (X_T), OBJ, JT, 3MF,
@@ -239,11 +417,19 @@ def export_document(s: Session, path: str, format: str = "") -> dict:
     if fmt == "PDF" and s.kind(d) == "drawing":
         from .drawing import export_pdf
         return export_pdf(s, path=path)
-    d.SaveAs(path, True)        # SaveCopyAs: the translator is chosen from the extension
+    if fmt in ("DWG", "DXF") and s.kind(d) == "drawing":
+        _translate_drawing(s, d, path, fmt)
+    else:
+        with _silent(s):
+            d.SaveAs(path, True)    # SaveCopyAs: the translator is chosen from the extension
     t0 = time.time()
     while not os.path.exists(path) and time.time() - t0 < 30:
         time.sleep(0.2)
     if not os.path.exists(path):
+        stem, ext_ = os.path.splitext(path)
+        parts = sorted(glob.glob(glob.escape(stem) + "*" + ext_))     # one file per sheet
+        if parts:
+            return {"paths": parts, "path": parts[0], "format": fmt, "bytes": sum(os.path.getsize(x) for x in parts)}
         raise InventorError(f"Inventor did not write {path} (is the {fmt} translator available?)")
     return {"path": path, "format": fmt, "bytes": os.path.getsize(path)}
 

@@ -123,6 +123,9 @@ def items(collection) -> Iterator[Any]:
     """1-based COM collection -> Python iterator."""
     if collection is None:
         return
+    if isinstance(collection, (list, tuple)):
+        yield from collection
+        return
     n = collection.Count
     for i in range(1, n + 1):
         yield collection.Item(i)

@@ -30,6 +30,8 @@ class Session:
         self._txn = None                       # open Transaction (undo group)
         self._current = None                   # working document (see doc())
         self._current_key = None
+        self.pid: int | None = None            # Inventor's process id, once connected
+        self.private = False                   # True when this session started its own Inventor process
         self.workdir = os.path.join(os.path.expanduser("~"), "Documents", "inventor-forge")
 
     # ------------------------------------------------------------------ connection
@@ -41,6 +43,10 @@ class Session:
                 return self._app
             except Exception:
                 self._app = None
+                if self.private:               # never fall through to attaching to the user's own Inventor
+                    self.private, self.pid = False, None
+                    raise InventorError("the private Inventor this session started has closed; "
+                                        "connect(private=true) starts another") from None
         self._app = self._connect()
         return self._app
 
@@ -57,7 +63,54 @@ class Session:
                 app.Visible = True
         except Exception:
             pass
+        self.pid = self._process_id(app)
         return app
+
+    @staticmethod
+    def _process_id(app) -> int | None:
+        import win32process
+        return safe(lambda: win32process.GetWindowThreadProcessId(app.MainFrameHWND)[1])
+
+    def start_private(self):
+        """Start a separate Inventor process that belongs to this session, so a crash or a stray command
+        can't touch what the user has open. Stops if no new process appeared."""
+        import time
+
+        import win32com.client as wc
+        import win32com.client.dynamic as dyn
+
+        from .uidrive import pids_named
+        if self.private and self._app is not None:
+            return self.app
+        before = set(pids_named("Inventor.exe"))
+        raw = wc.DispatchEx("Inventor.Application")
+        t0 = time.time()
+        while not set(pids_named("Inventor.exe")) - before and time.time() - t0 < 120:
+            time.sleep(0.5)
+        new = set(pids_named("Inventor.exe")) - before
+        app = dyn.Dispatch(raw._oleobj_)
+        pid = self._process_id(app) if new else None
+        if pid not in new:
+            raise InventorError("could not start a separate Inventor (no new process appeared); nothing was touched")
+        app.Visible = True
+        self._app, self.pid, self.private = app, pid, True
+        self._current = None
+        return app
+
+    def solver_busy(self) -> list[str]:
+        """Open Stress Analysis solve/report windows on the Inventor this session uses (Windows calls only)."""
+        from .uidrive import solver_windows
+        return solver_windows([self.pid] if self.pid else None)
+
+    def stock_template(self, filename: str) -> str:
+        """Autodesk's own metric template by file name. FileManager.GetTemplateFile follows the active
+        Inventor project, which may hold someone else's templates; this doesn't. "" if it isn't installed."""
+        import glob
+        year = str(safe(lambda: self.app.SoftwareVersion.DisplayVersion, ""))[:4]
+        root = r"C:\Users\Public\Documents\Autodesk"
+        found = glob.glob(os.path.join(root, f"Inventor {year}", "Templates", "*", "Metric", filename))
+        found.sort(key=lambda p: 0 if os.sep + "en-US" + os.sep in p else 1)
+        return found[0] if found else ""
 
     def connected(self) -> bool:
         return self._app is not None

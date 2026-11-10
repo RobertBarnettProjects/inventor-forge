@@ -99,7 +99,8 @@ def place_component(s: Session, path: str, x: float = 0.0, y: float = 0.0, z: fl
 
 @tool("assembly")
 def add_constraint(s: Session, type: str, occurrence_one: str, entity_one: str, occurrence_two: str,
-                   entity_two: str, offset: float = 0.0, angle: float = 0.0, opposed: bool = True) -> dict:
+                   entity_two: str, offset: float = 0.0, angle: float = 0.0, opposed: bool = True,
+                   offset_expression: str = "") -> dict:
     """Assembly constraint between two components (or a component and the assembly origin).
 
     type: mate | flush | angle | insert | tangent
@@ -108,6 +109,8 @@ def add_constraint(s: Session, type: str, occurrence_one: str, entity_one: str, 
     offset: mm (mate/flush/tangent/insert distance)
     angle: degrees (angle constraints)
     opposed: insert — axes opposed (true for a bolt into a hole from the far side)
+    offset_expression: drive the offset from parameters, e.g. "L / 2" (overrides offset). The offset's sign depends on the faces,
+      so check the returned positions and use "-L / 2" if the part went the wrong way
     """
     cons = s.assembly().ComponentDefinition.Constraints
     e1 = _entity(s, occurrence_one, entity_one)
@@ -130,6 +133,11 @@ def add_constraint(s: Session, type: str, occurrence_one: str, entity_one: str, 
         c = cons.AddTangentConstraint(e1, e2, False, off)
     else:
         raise InventorError("type must be mate, flush, angle, insert or tangent")
+    if offset_expression:
+        if t == "angle":
+            c.Angle.Expression = offset_expression
+        else:
+            c.Offset.Expression = offset_expression
     s.doc().Update()
     return {"constraint": c.Name, "health": K.name_of(safe(lambda: c.HealthStatus, 0), "k"),
             "positions": [_occ_row(o) for o in items(s.assembly().ComponentDefinition.Occurrences)][:20]}
@@ -188,6 +196,32 @@ def check_interference(s: Session) -> dict:
 
 
 @tool("assembly", mutates=False)
+def check_assembly(s: Session) -> dict:
+    """One-call health check of an assembly: interferences, constraint health, overall size, mass, ungrounded components
+    with no constraints."""
+    from collections import Counter
+    cd = s.assembly().ComponentDefinition
+    occs = list(items(cd.Occurrences))
+    clash = check_interference(s)
+    health = Counter(K.name_of(safe(lambda c=c: c.HealthStatus, 0), "k") for c in items(cd.Constraints))
+    rb = cd.RangeBox
+    loose = [o.Name for o in occs if not safe(lambda o=o: o.Grounded, False) and safe(lambda o=o: o.Constraints.Count, 0) == 0]
+    bad = sum(v for k, v in health.items() if k != "kUpToDateHealth")
+    return {"components": len(occs), "interferences": clash.get("interferences", []), "constraints": dict(health),
+            "size_mm": [r((getattr(rb.MaxPoint, a) - getattr(rb.MinPoint, a)) * 10, 1) for a in "XYZ"],
+            "mass_kg": safe(lambda: r(cd.MassProperties.Mass, 3)), "unconstrained": loose,
+            "ok": not clash.get("interferences") and bad == 0}
+
+
+@tool("assembly", mutates=False)
+def component_gap(s: Session, occurrence_one: str, occurrence_two: str) -> dict:
+    """Smallest distance between two components, in mm (0 when they touch or overlap)."""
+    d = s.app.MeasureTools.GetMinimumDistance(_occ(s, occurrence_one), _occ(s, occurrence_two))
+    d = d[0] if isinstance(d, tuple) else d          # late binding returns the [out] arguments alongside it
+    return {"gap_mm": r(d * 10, 4)}
+
+
+@tool("assembly", mutates=False)
 def bill_of_materials(s: Session, csv_path: str = "") -> dict:
     """Parts-only BOM: item, quantity, part number, description, material, mass; optional CSV export."""
     asm = s.assembly()
@@ -219,3 +253,18 @@ def bill_of_materials(s: Session, csv_path: str = "") -> dict:
             w.writerows(rows)
         out["csv"] = csv_path
     return out
+
+
+@tool("assembly")
+def pattern_component(s: Session, occurrences: list[str], axis: str = "Z", count: int = 6, angle: float = 60.0,
+                      linear: bool = False, spacing: float = 0.0) -> dict:
+    """Circular (angle = degrees between copies) or linear (linear=true, spacing in mm) pattern of components along an
+    assembly origin axis X/Y/Z."""
+    cd = s.assembly().ComponentDefinition
+    parents = s.collection([_occ(s, o) for o in occurrences])
+    ax = cd.WorkAxes.Item({"X": 1, "Y": 2, "Z": 3}[axis.upper()])
+    if linear:
+        pat = cd.OccurrencePatterns.AddRectangularPattern(parents, ax, True, spacing * MM, int(count))
+    else:
+        pat = cd.OccurrencePatterns.AddCircularPattern(parents, ax, True, math.radians(angle), int(count))
+    return {"pattern": pat.Name, "occurrences": cd.Occurrences.Count}

@@ -28,7 +28,10 @@ INSTRUCTIONS = (
     "make_assembly_sheet, then check_drawing until TOTAL ISSUES: 0, render_sheet to look, export_pdf. "
     "Analysis: analyze_stress / analyze_modes run Inventor's own Stress Analysis and TAKE OVER THE USER'S MOUSE "
     "AND KEYBOARD while they run (faces by list_faces index). Always show the user the notice the tool returns "
-    "and wait for their go-ahead before calling again with user_notified=true. "
+    "and wait for their go-ahead before calling again with user_notified=true. Once a study exists, copy_study, "
+    "set_analysis_parameters, solve_study, read_result_maximum and run_study_cases need no mouse: build a template, then sweep it. "
+    "Don't call Inventor during a solve; solve_state is safe. connect(private=true) gives this session its own Inventor when the "
+    "user has theirs open. "
     "Standards default to AS 1100 (third angle) / ISO metric threads. execute_python is the escape hatch."
 )
 

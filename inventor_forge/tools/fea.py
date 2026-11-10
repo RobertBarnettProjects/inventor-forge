@@ -17,13 +17,14 @@ import html
 import math
 import os
 import re
+import shutil
 import time
 
 from .. import uidrive as U
 from ..com import InventorError, K, items, r, safe, typed_call
 from ..registry import tool
 from ..session import Session
-from .inspect import face_centroid, face_normal
+from .inspect import face_centroid, face_normal, find_planar_face
 
 FEA_ENV = "FEA Environment Internal Name"
 
@@ -63,12 +64,18 @@ def _click_screen(x: int, y: int, pid: int, what: str) -> None:
     if not _owned_by_inventor(under, pid):
         raise InventorError(f"cannot click {what}: another window covers Inventor at that spot — bring Inventor "
                             "to the front, keep it unobstructed and don't use the mouse during the analysis")
-    win32api.SetCursorPos((x, y))
-    time.sleep(0.25)
-    win32api.SetCursorPos((x + 1, y))       # a little movement so Inventor highlights what is under the cursor
-    time.sleep(0.35)
-    win32api.SetCursorPos((x, y))
-    time.sleep(0.15)
+    for _ in range(3):
+        win32api.SetCursorPos((x, y))
+        time.sleep(0.25)
+        win32api.SetCursorPos((x + 1, y))       # a little movement so Inventor highlights what is under the cursor
+        time.sleep(0.35)
+        win32api.SetCursorPos((x, y))
+        time.sleep(0.15)
+        if win32api.GetCursorPos() == (x, y):
+            break
+    else:
+        raise InventorError(f"cannot click {what}: the mouse keeps moving — someone is using it. Stopped; rerun when "
+                            "the mouse can be left alone")
     win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0)
     time.sleep(0.05)
     win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0)
@@ -102,38 +109,102 @@ def _type_into(c: U.Ctrl, text: str, pid: int) -> None:
     time.sleep(0.3)
 
 
+def _set_value(dlg: int, c: U.Ctrl, text: str, pid: int, allow_typing: bool = True) -> None:
+    """Enter a value and confirm the box took it. Done with window messages and a real focus change (typed
+    keys are sometimes dropped); typing is only the fallback, and only where the user agreed to it."""
+    _front(dlg)
+    others = [o for o in U.find_all(dlg, cls="Edit") if o.hwnd != c.hwnd and o.enabled]
+    other = others[0] if others else U.find(dlg, cid=2)
+    if U.same_value(U.commit_text(c, text, other), text):
+        return
+    if not allow_typing:
+        raise InventorError(f"Inventor did not accept the value {text!r}")
+    _type_into(c, text, pid)
+    shown = U.get_text(c)
+    if not U.same_value(shown, text):
+        raise InventorError(f"Inventor did not accept the value {text!r} (the box shows {shown!r})")
+
+
 # --------------------------------------------------------------------------- picking faces
+def _face_key(f) -> tuple:
+    """Identity of a face, also for a face of a component seen from the assembly (a proxy)."""
+    occ = safe(lambda: f.ContainingOccurrence.Name, "")
+    native = safe(lambda: f.NativeObject) if occ else None
+    return occ, safe(lambda: (native or f).TransientKey)
+
+
+def _same_face(a, b) -> bool:
+    return _face_key(a) == _face_key(b)
+
+
+def _any_cdef(s: Session):
+    return s.doc().ComponentDefinition
+
+
 def _ray_first_hit_is(s: Session, face, origin, direction) -> bool | None:
     """True if a ray from origin along direction hits `face` first (None if the API can't tell)."""
     try:
-        cd = s.cdef()
+        cd = _any_cdef(s)
         out = typed_call(cd, "FindUsingRay", s.tg.CreatePoint(*origin), s.tg.CreateUnitVector(*direction),
                          0.0001, None, None, True)
         objs = out[-2] if len(out) >= 2 else None
         if objs is None or objs.Count == 0:
             return None
         first = objs.Item(1)
-        return bool(first.TransientKey == face.TransientKey)
+        return _same_face(first, face)
     except Exception:
         return None
 
 
-def _look_at_face(s: Session, face) -> None:
+def face_ref(s: Session, ref):
+    """A face to pick: an index (part) or "Component:1/5" = face 5 of that component (assembly; indices as in
+    inspect_assembly(faces_of=...))."""
+    if isinstance(ref, dict):
+        ref = f"{ref.get('occurrence')}/{ref.get('face')}"
+    if isinstance(ref, str) and "/" in ref:
+        occ_name, idx = ref.rsplit("/", 1)
+        from .assembly import _occ
+        o = _occ(s, occ_name.strip())
+        faces = o.SurfaceBodies.Item(1).Faces
+        i = int(idx)
+        if not 1 <= i <= faces.Count:
+            raise InventorError(f"{occ_name} has faces 1..{faces.Count}, not {i}")
+        return faces.Item(i)
+    if s.kind() == "assembly":
+        raise InventorError(f"in an assembly give faces as \"Component:1/5\" (component name / face index), not {ref!r}")
+    return s.face(int(ref))
+
+
+def _aim_point(s: Session, face, n) -> list[float]:
+    """A point well inside the face to aim at, in cm. PointOnFace can sit right on the boundary, so try the
+    middle of the face first and keep the first point a ray from outside really reaches on this face."""
+    p = face.PointOnFace
+    fallback = [p.X, p.Y, p.Z]
+    if face.SurfaceType != K.kPlaneSurface:
+        return fallback
+    q = [v * 0.1 for v in face_centroid(face)]
+    if _ray_first_hit_is(s, face, [q[i] + n[i] * 100 for i in range(3)], [-n[0], -n[1], -n[2]]):
+        return q
+    return fallback
+
+
+def _look_at_face(s: Session, face, at=None) -> None:
     """Point the camera straight at an interior point of the face from outside, zoomed in so the face
     fills the middle of the view and nothing else is under the centre pixel."""
     n = face_normal(face)
-    p = face.PointOnFace
+    x0, y0, z0 = [v * 0.1 for v in at] if at else _aim_point(s, face, n)
     dirs = [n]
     # if something blocks the straight view (a face at the bottom of a pocket), try tilted views
-    for ax in ((1, 0, 0), (0, 1, 0), (0, 0, 1)):
-        for sgn in (1, -1):
-            t = [n[i] + 0.6 * sgn * ax[i] for i in range(3)]
-            ln = math.sqrt(sum(v * v for v in t))
-            if ln > 1e-6 and abs(sum(t[i] * n[i] for i in range(3)) / ln) > 0.5:
-                dirs.append([v / ln for v in t])
+    for tilt in (0.6, 1.5, 3.0):
+        for ax in ((1, 0, 0), (0, 1, 0), (0, 0, 1)):
+            for sgn in (1, -1):
+                t = [n[i] + tilt * sgn * ax[i] for i in range(3)]
+                ln = math.sqrt(sum(v * v for v in t))
+                if ln > 1e-6 and sum(t[i] * n[i] for i in range(3)) / ln > 0.2:
+                    dirs.append([v / ln for v in t])
     chosen = n
     for d in dirs:
-        eye = [p.X + d[0] * 100, p.Y + d[1] * 100, p.Z + d[2] * 100]
+        eye = [x0 + d[0] * 100, y0 + d[1] * 100, z0 + d[2] * 100]
         hit = _ray_first_hit_is(s, face, eye, [-d[0], -d[1], -d[2]])
         if hit is None or hit:
             chosen = d
@@ -141,14 +212,15 @@ def _look_at_face(s: Session, face) -> None:
     v = s.app.ActiveView
     cam = v.Camera
     cam.Perspective = False
-    cam.Target = s.tg.CreatePoint(p.X, p.Y, p.Z)
-    cam.Eye = s.tg.CreatePoint(p.X + chosen[0] * 100, p.Y + chosen[1] * 100, p.Z + chosen[2] * 100)
+    cam.Target = s.tg.CreatePoint(x0, y0, z0)
+    cam.Eye = s.tg.CreatePoint(x0 + chosen[0] * 100, y0 + chosen[1] * 100, z0 + chosen[2] * 100)
     up = (0, 0, 1) if abs(chosen[2]) < 0.9 else (0, 1, 0)
     cam.UpVector = s.tg.CreateUnitVector(*up)
     # zoom so roughly the face's smaller size spans a third of the view
     rb = face.Evaluator.RangeBox
     span = sorted([rb.MaxPoint.X - rb.MinPoint.X, rb.MaxPoint.Y - rb.MinPoint.Y, rb.MaxPoint.Z - rb.MinPoint.Z])
-    size = max(span[1], 0.05) * 3
+    # planar faces fill the middle of the view; a curved wall seen at an angle needs a much closer view
+    size = max(span[1], 0.05) * 3 if face.SurfaceType == K.kPlaneSurface else max(span[0], 0.05) * 1.2
     safe(lambda: cam.SetExtents(size, size))
     cam.ApplyWithoutTransition()
     time.sleep(0.3)
@@ -240,14 +312,21 @@ def _pick_face(s: Session, face, pid: int, dlg: int, attempts: int = 4) -> None:
     park = ((dl + dr) // 2, dt + 12)                 # the dialog's title bar
     label_before = _faces_label(dlg).lower()
     last = None
-    for _ in range(attempts):
-        win32api.SetCursorPos(park)
+    for attempt in range(attempts):
         _look_at_face(s, face)
         safe(lambda: s.app.ActiveView.Update())
+        # Inventor only repaints once the mouse is over the viewport: without this the click lands on the old view
+        hwnd = s.app.ActiveView.HWND
+        left, top, right, bottom = win32gui.GetClientRect(hwnd)
+        win32api.SetCursorPos(win32gui.ClientToScreen(hwnd, (left + 40, top + 40)))
+        time.sleep(0.25)
+        win32api.SetCursorPos(win32gui.ClientToScreen(hwnd, (left + 44, top + 44)))
         _wait_screen_settled(s)
+        win32api.SetCursorPos(park)
+        time.sleep(0.3)
         before = _screen_samples(s)
-        if sum(_vivid(c) for c in before) >= 3:
-            return                                   # already selected
+        if attempt and sum(_vivid(c) for c in before) >= 3:
+            return                                   # the previous click registered late
         hwnd = s.app.ActiveView.HWND
         left, top, right, bottom = win32gui.GetClientRect(hwnd)
         cx, cy = win32gui.ClientToScreen(hwnd, ((right - left) // 2, (bottom - top) // 2))
@@ -260,12 +339,138 @@ def _pick_face(s: Session, face, pid: int, dlg: int, attempts: int = 4) -> None:
         last = _screen_samples(s)
         if os.environ.get("INVENTOR_FORGE_DEBUG"):
             print("pick", _faces_label(dlg), before, last)
-        if sum(_vivid(c) for c in last) >= 3:
-            return
+        if sum(1 for a, b in zip(before, last) if not _close(a, b, 45)) >= 3:
+            return                                   # the face changed to the selection colour
         if label_before.startswith("location") and not _faces_label(dlg).lower().startswith("location"):
-            raise InventorError("a different face than the requested one got selected — stopping (the view "
-                                "probably hadn't redrawn yet); rerun the analysis")
+            raise _WrongFace("a different face than the requested one got selected — stopped so the results "
+                             "can't be wrong; rerun the analysis")
     raise InventorError(f"could not confirm the face pick after {attempts} clicks (screen colours {last})")
+
+
+def _norm(v):
+    n = math.sqrt(sum(x * x for x in v)) or 1.0
+    return [x / n for x in v]
+
+
+def _cross(a, b):
+    return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+
+
+def _common_view(s: Session, faces) -> tuple | None:
+    """A direction from which every face is the first thing seen at its aim point, or None."""
+    data = [(face_normal(f), f) for f in faces]
+    pts = [(_aim_point(s, f, n), n, f) for n, f in data]
+    cands = [_norm([sum(n[i] for n, _ in data) for i in range(3)])] + [n for n, _ in data]
+    cands += [_norm([a, b, 1]) for a in (1, -1) for b in (1, -1)] + [_norm([a, b, -1]) for a in (1, -1) for b in (1, -1)]
+    cands += [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]
+    for d in cands:
+        if any(sum(n[i] * d[i] for i in range(3)) < 0.3 for _p, n, _f in pts):
+            continue
+        if all(_ray_first_hit_is(s, f, [p[i] + d[i] * 100 for i in range(3)], [-d[0], -d[1], -d[2]]) for p, _n, f in pts):
+            return d, [p for p, _n, _f in pts]
+    return None
+
+
+def _set_view(s: Session, d, pts) -> tuple:
+    """Camera along -d over all the points; returns a function mapping a model point (cm) to a screen pixel."""
+    import win32gui
+    target = [sum(p[i] for p in pts) / len(pts) for i in range(3)]
+    up0 = [0, 0, 1] if abs(d[2]) < 0.9 else [0, 1, 0]
+    f = _norm([-d[0], -d[1], -d[2]])
+    right = _norm(_cross(f, up0))
+    up = _cross(right, f)
+    xs = [sum((p[i] - target[i]) * right[i] for i in range(3)) for p in pts]
+    ys = [sum((p[i] - target[i]) * up[i] for i in range(3)) for p in pts]
+    span = max(max(xs) - min(xs), max(ys) - min(ys), 1.0) * 1.6 + 2.0
+    v = s.app.ActiveView
+    cam = v.Camera
+    cam.Perspective = False
+    safe(lambda: cam.SetExtents(span, span))          # zoom first: setting it later re-centres the camera
+    cam.Target = s.tg.CreatePoint(*target)
+    cam.Eye = s.tg.CreatePoint(*[target[i] + d[i] * 100 for i in range(3)])
+    cam.UpVector = s.tg.CreateUnitVector(*up0)
+    cam.ApplyWithoutTransition()
+    time.sleep(0.4)
+    cam = v.Camera
+    ext = typed_call(cam, "GetExtents", 0.0, 0.0)
+    w_cm, h_cm = float(ext[-2]), float(ext[-1])
+    hwnd = v.HWND
+    left, top, rgt, bot = win32gui.GetClientRect(hwnd)
+    W, H = rgt - left, bot - top
+    scale = min(W / max(w_cm, 1e-9), H / max(h_cm, 1e-9))
+    cx, cy = win32gui.ClientToScreen(hwnd, (W // 2, H // 2))
+
+    def to_px(p):
+        q = [p[i] - target[i] for i in range(3)]
+        return (int(round(cx + sum(q[i] * right[i] for i in range(3)) * scale)),
+                int(round(cy - sum(q[i] * up[i] for i in range(3)) * scale)))
+    return to_px
+
+
+def _pixels(points, dx: int = 5) -> list[tuple[int, int, int]]:
+    import win32gui
+    hdc = win32gui.GetDC(0)
+    try:
+        out = []
+        for x, y in points:
+            for ox, oy in ((-dx, 0), (dx, 0), (0, -dx), (0, dx)):
+                c = win32gui.GetPixel(hdc, x + ox, y + oy)
+                out.append((c & 255, (c >> 8) & 255, (c >> 16) & 255))
+        return out
+    finally:
+        win32gui.ReleaseDC(0, hdc)
+
+
+def _pick_faces(s: Session, faces: list, pid: int, dlg: int) -> None:
+    """Pick several faces: all from one view when there is one that sees them all (one camera move, much faster),
+    checking on screen that each click took; otherwise one face at a time."""
+    import win32api
+    import win32gui
+    if len(faces) < 2:
+        for f in faces:
+            _pick_face(s, f, pid, dlg)
+        return
+    view = _common_view(s, faces)
+    if view is None:
+        for f in faces:
+            _pick_face(s, f, pid, dlg)
+        return
+    d, pts = view
+    to_px = _set_view(s, d, pts)
+    hwnd = s.app.ActiveView.HWND
+    dl, dt, dr, _db = win32gui.GetWindowRect(dlg)
+    park = ((dl + dr) // 2, dt + 12)
+    left, top, _r, _b = win32gui.GetClientRect(hwnd)
+    win32api.SetCursorPos(win32gui.ClientToScreen(hwnd, (left + 40, top + 40)))
+    time.sleep(0.25)
+    win32api.SetCursorPos(win32gui.ClientToScreen(hwnd, (left + 44, top + 44)))
+    _wait_screen_settled(s)
+    win32api.SetCursorPos(park)
+    time.sleep(0.4)
+    pix = [to_px(p) for p in pts]
+    missed = []
+    for f, xy in zip(faces, pix):
+        under = win32gui.WindowFromPoint(xy)
+        if under != hwnd and not win32gui.IsChild(hwnd, under):
+            missed.append(f)
+            continue
+        ok = False
+        for _attempt in range(3):
+            before = _pixels([xy])
+            _click_screen(xy[0], xy[1], pid, "a face in the viewport")
+            win32api.SetCursorPos(park)
+            time.sleep(0.7)
+            after = _pixels([xy])
+            if sum(1 for a, b in zip(before, after) if not _close(a, b, 45)) >= 3:
+                ok = True
+                break
+            if sum(_vivid(c) for c in after) >= 3:      # it was already selected (a late click): leave it
+                ok = True
+                break
+        if not ok:
+            missed.append(f)
+    for f in missed:                                   # anything not confirmed from the shared view: one at a time
+        _pick_face(s, f, pid, dlg)
 
 
 # --------------------------------------------------------------------------- command + dialog steps
@@ -286,12 +491,14 @@ def _front(h: int) -> None:
     time.sleep(0.3)
 
 
-def _dialog(pid: int, title, timeout: float = 20.0) -> int:
+def _dialog(pid: int, title, timeout: float = 20.0, front: bool = True) -> int:
     """Wait for an Inventor dialog, park it at the left edge (clear of the viewport centre where faces
-    are picked) and bring it to the front."""
+    are picked) and bring it to the front (not for steps that need no focus: front=False)."""
     import win32con
     import win32gui
     h = U.wait_window(pid, title, timeout)
+    if not front:
+        return h
     try:
         owner = win32gui.GetWindow(h, win32con.GW_OWNER) or h
         ml, mt, mr, mb = win32gui.GetWindowRect(win32gui.GetAncestor(owner, 2))
@@ -317,104 +524,321 @@ def _ok(pid: int, h: int, what: str, timeout: float = 15.0) -> None:
         raise InventorError(f"{what}: dialog did not close")
 
 
+STRESS_ADDIN = "{B3D04494-EDD2-4FDC-9EC2-30BAF8D6B77B}"
+
+
 def _enter_analysis(s: Session) -> None:
-    env = s.app.UserInterfaceManager.Environments.Item(FEA_ENV)
+    env = None
+    for _ in range(20):          # the add-in loads in the background after Inventor starts; switch it on if needed
+        env = safe(lambda: s.app.UserInterfaceManager.Environments.Item(FEA_ENV))
+        if env is not None:
+            break
+        addin = safe(lambda: s.app.ApplicationAddIns.ItemById(STRESS_ADDIN))
+        if addin is not None and not safe(lambda: addin.Activated, True):
+            safe(lambda: addin.Activate())
+        time.sleep(0.5)
+    if env is None:
+        raise InventorError("Inventor's Stress Analysis environment isn't available (it needs Inventor Professional "
+                            "and its Stress Analysis add-in)")
     s.doc().EnvironmentManager.SetCurrentEnvironment(env)
     time.sleep(0.8)
 
 
-def _create_study(s: Session, pid: int, modal_modes: int = 0) -> None:
+def _create_study(s: Session, pid: int, modal_modes: int = 0, study_name: str = "", contact_type: str = "",
+                  model_state: str = "") -> None:
     _run_command(s, "FeaCreateSimCmd")
     h = _dialog(pid, "Create New Study")
     if modal_modes:
         U.click(U.find(h, cid=1401))                   # Modal Analysis
         time.sleep(0.4)
+        if os.environ.get("INVENTOR_FORGE_DEBUG"):
+            print("modal", [(c.cid, c.text, c.enabled, U.is_checked(c)) for c in U.controls(h) if c.cid in (1405, 1406)],
+                  [(c.cid, c.enabled) for c in U.controls(h) if c.cid in (1409, 1410, 1411)])
         nm = U.find(h, cid=1405)                       # Number of Modes
         U.set_check(nm, True)
         time.sleep(0.3)
-        _type_into(U.find(h, cid=1409), str(int(modal_modes)), pid)
+        _set_value(h, U.find(h, cid=1409, cls="Edit"), str(int(modal_modes)), pid)
     else:
         U.click(U.find(h, cid=1402))                   # Static Analysis
+    if study_name:                                     # after the type: choosing a type resets the default name
+        import win32gui
+        time.sleep(0.3)
+        win32gui.SendMessage(U.find(h, cid=1413).hwnd, 0x000C, 0, study_name)   # WM_SETTEXT; a plain text box
+    combos = [c for c in U.controls(h) if c.cls == "ComboBox"]
+    if contact_type:
+        box = next((c for c in combos if contact_type.lower() in [x.lower() for x in U.combo_items(c)]), None)
+        if box is None:
+            raise InventorError(f"unknown contact type {contact_type!r}")
+        U.combo_select(box, contact_type)
+    if model_state:                                    # last: switching the model state can rebuild the dialog
+        box = next((c for c in U.controls(h) if c.cls == "ComboBox" and model_state in U.combo_items(c)), None)
+        if box is None:
+            U.close(h)
+            raise InventorError(f"model state {model_state!r} isn't offered for a study (see list_model_states)")
+        U.combo_select(box, model_state)
+        time.sleep(2.0)
+        import win32gui
+        if not (win32gui.IsWindow(h) and win32gui.IsWindowVisible(h)):
+            time.sleep(1.0)
+            return
     _ok(pid, h, "Create Study")
     time.sleep(0.8)
 
 
-def _fixed(s: Session, pid: int, faces: list) -> None:
-    _run_command(s, "FeaCreateConstrFixedCmd")
-    h = _dialog(pid, "Fixed Constraint")
-    for f in faces:
-        _pick_face(s, f, pid, h)
-    _ok(pid, h, "Fixed Constraint")
+class _WrongFace(InventorError):
+    pass
 
 
-def _force(s: Session, pid: int, face, vec) -> None:
-    _run_command(s, "FeaCreateLoadForceCmd")
-    h = _dialog(pid, "Force")
-    _pick_face(s, face, pid, h)
+def _with_restart(pid: int, title: str, step) -> None:
+    """A wrong pick can't be undone inside the dialog, so cancel it and do the step again from scratch."""
+    for attempt in range(2):
+        try:
+            step()
+            return
+        except _WrongFace:
+            for w in U.process_windows(pid):
+                if title.lower() in win32gui_text(w).lower():
+                    U.click(U.find(w, cid=2))
+                    U.wait_gone(w, 10)
+            time.sleep(0.5)
+            if attempt:
+                raise
+
+
+def win32gui_text(h: int) -> str:
+    import win32gui
+    return safe(lambda: win32gui.GetWindowText(h), "") or ""
+
+
+def _support(s: Session, pid: int, faces: list, kind: str = "Fixed") -> None:
+    """A Fixed, Frictionless or Pin constraint on the faces."""
+    title = f"{kind} Constraint"
+
+    def step():
+        _run_command(s, f"FeaCreateConstr{kind}Cmd")
+        h = _dialog(pid, title)
+        _pick_faces(s, faces, pid, h)
+        _ok(pid, h, title)
+    _with_restart(pid, title, step)
+
+
+def _vector_load(s: Session, pid: int, cmd: str, title: str, faces: list, vec, unit: str, point=None) -> None:
+    """Force, bearing, moment or remote-force load given by X/Y/Z components on picked faces."""
+    def pick_step():
+        nonlocal h
+        _run_command(s, cmd)
+        h = _dialog(pid, title)
+        _pick_faces(s, faces, pid, h)
+    h = 0
+    _with_restart(pid, title, pick_step)
     U.set_check(U.find(h, cid=1225), True)              # Use Vector Components
     time.sleep(0.4)
     for cid, v in zip((1216, 1215, 1220), vec):
-        _type_into(U.find(h, cid=cid), f"{float(v):g}", pid)
+        _set_value(h, U.find(h, cid=cid), f"{float(v):g} {unit}", pid)
+    if point is not None:                               # remote force: where the force acts
+        for cid, v in zip((10067, 10068, 10069), point):
+            _set_value(h, U.find(h, cid=cid), f"{float(v):g} mm", pid)
+    _ok(pid, h, title)
+
+
+def _local_mesh(s: Session, pid: int, faces: list, size_mm: float) -> None:
+    def step():
+        _run_command(s, "FeaCreateLocalMeshControlCmd")
+        h = _dialog(pid, "Local Mesh Control")
+        _pick_faces(s, faces, pid, h)
+        _set_value(h, U.find(h, cid=10005), f"{float(size_mm):g} mm", pid)
+        _ok(pid, h, "Local Mesh Control")
+    _with_restart(pid, "Local Mesh Control", step)
+
+
+def _convergence(s: Session, pid: int, refinements: int, stop_percent: float) -> None:
+    """Inventor's own h-refinement: re-mesh where stress changes most until the peak settles."""
+    _run_command(s, "FeaConvergenceCmd")
+    h = _dialog(pid, "Convergence Settings")
+    _set_value(h, U.find(h, cid=10007), str(int(refinements)), pid)
+    _set_value(h, U.find(h, cid=10135), f"{float(stop_percent):g}", pid)
+    _ok(pid, h, "Convergence Settings")
+
+
+def _auto_contacts(s: Session, pid: int) -> None:
+    _run_command(s, "FeaCreateContactAutoCmd")
+    t0 = time.time()
+    while time.time() - t0 < 120:                      # large assemblies take a while; a small dialog may report it
+        time.sleep(1.0)
+        if not U.solver_windows([pid]) and not any(c == "#32770" and "contact" in t.lower() for _h, c, t in U.window_rows(pid)):
+            break
+    for h, c, t in U.window_rows(pid):
+        if c == "#32770" and h != s.app.MainFrameHWND and t in ("Stress Analysis", "Automatic Contacts"):
+            ok = next((x for x in U.find_all(h, cls="Button") if x.text.replace("&", "") in ("OK", "Close", "Yes")), None)
+            if ok:
+                U.click(ok)
+
+
+def _force(s: Session, pid: int, faces: list, vec) -> None:
+    def pick_step():
+        nonlocal h
+        _run_command(s, "FeaCreateLoadForceCmd")
+        h = _dialog(pid, "Force")
+        _pick_faces(s, faces, pid, h)
+    h = 0
+    _with_restart(pid, "Force", pick_step)
+    U.set_check(U.find(h, cid=1225), True)              # Use Vector Components
+    time.sleep(0.4)
+    for cid, v in zip((1216, 1215, 1220), vec):
+        _set_value(h, U.find(h, cid=cid), f"{float(v):g}", pid)
     _ok(pid, h, "Force")
 
 
-def _pressure(s: Session, pid: int, face, mpa: float) -> None:
-    _run_command(s, "FeaCreateLoadPressureCmd")
-    h = _dialog(pid, "Pressure")
-    _pick_face(s, face, pid, h)
-    _type_into(U.find(h, cid=10015), f"{float(mpa):g} MPa", pid)
+def _pressure(s: Session, pid: int, faces: list, mpa: float) -> None:
+    def pick_step():
+        nonlocal h
+        _run_command(s, "FeaCreateLoadPressureCmd")
+        h = _dialog(pid, "Pressure")
+        _pick_faces(s, faces, pid, h)
+    h = 0
+    _with_restart(pid, "Pressure", pick_step)
+    _set_value(h, U.find(h, cid=10015), f"{float(mpa):g} MPa", pid)
     _ok(pid, h, "Pressure")
 
 
-def _gravity(s: Session, pid: int, g=(0.0, 0.0, -9810.0)) -> None:
-    _run_command(s, "FeaCreateLoadGravityCmd")
-    h = _dialog(pid, "Gravity")
-    U.set_check(U.find(h, cid=1225), True)
-    time.sleep(0.4)
-    for cid, v in zip((1216, 1215, 1220), g):
-        _type_into(U.find(h, cid=cid), f"{float(v):g}", pid)
+def _gravity(s: Session, pid: int) -> None:
+    """Self-weight in -Z. Inventor's dialog aims gravity into the face you pick, so pick one looking up (+Z)."""
+    top = find_planar_face(s, "Z") if s.kind() == "part" else _top_face_any(s)
+    if top is None:
+        raise InventorError("gravity needs a flat face looking straight up (+Z) to set Inventor's direction")
+
+    def pick_step():
+        nonlocal h
+        _run_command(s, "FeaCreateLoadGravityCmd")
+        h = _dialog(pid, "Gravity")
+        _pick_face(s, top, pid, h)
+    h = 0
+    _with_restart(pid, "Gravity", pick_step)
+    _set_value(h, U.find(h, cid=10015), "9810 mm/s^2", pid)
     _ok(pid, h, "Gravity")
 
 
-def _mesh(s: Session, pid: int, avg_fraction: float) -> None:
+def _top_face_any(s: Session):
+    """Highest flat face looking straight up, in any component of an assembly."""
+    best, z = None, -1e99
+    for o in items(s.doc().ComponentDefinition.Occurrences.AllLeafOccurrences):
+        for f in items(safe(lambda o=o: o.SurfaceBodies.Item(1).Faces) or []):
+            if f.SurfaceType != K.kPlaneSurface:
+                continue
+            n = face_normal(f)
+            if n[2] > 0.999:
+                c = f.PointOnFace.Z
+                if c > z:
+                    best, z = f, c
+    return best
+
+
+def _mesh(s: Session, pid: int, avg_fraction: float, allow_typing: bool = True) -> None:
     _run_command(s, "FeaMeshSettingCmd")
     h = _dialog(pid, "Mesh Settings")
-    _type_into(U.find(h, cid=10081), f"{avg_fraction:g}", pid)
+    _set_value(h, U.find(h, cid=10081), f"{avg_fraction:g}", pid, allow_typing)
+    if not U.find(h, cid=1).enabled:                  # already that size: Inventor leaves OK disabled
+        U.close(h)
+        U.wait_gone(h, 10)
+        return
     _ok(pid, h, "Mesh Settings")
 
 
-def _simulate(s: Session, pid: int, timeout: float = 900.0) -> float:
-    import win32gui
+def _simulate(s: Session, pid: int, timeout: float = 3600.0, front: bool = True) -> tuple[float, list[str]]:
+    """Run the active study and wait for it using Windows calls only (Inventor can crash if it gets COM calls
+    during a solve). Returns seconds taken and any solver warnings."""
     _run_command(s, "FeaSimulateCmd")
-    h = _dialog(pid, "Simulate")
+    h = _dialog(pid, "Simulate", front=front)
     t0 = time.time()
     U.click(U.find(h, cid=1))                          # Run
-    # the dialog closes when the solve finishes (or immediately for small models); also watch for a
-    # separate progress window
-    while time.time() - t0 < timeout:
-        busy = False
-        for w in U.process_windows(pid):
-            try:
-                if win32gui.GetClassName(w) == "#32770" and "simulat" in win32gui.GetWindowText(w).lower():
-                    busy = True
-            except Exception:
-                continue
-        if not busy:
+    warnings: list[str] = []
+    finished_at = 0.0
+    while True:
+        if pid not in U.pids_named("Inventor.exe"):
+            raise InventorError("Inventor closed during the solve; nothing from this run was stored")
+        open_ = [w for w, cls, title in U.window_rows(pid) if cls == "#32770" and title == "Simulate"]
+        if not open_:
             break
+        try:
+            for w, cls, title in U.window_rows(pid):         # never let a stray press cancel a running solve
+                if cls == "#32770" and title == "Stress Analysis" and any("cancel study" in c.text.lower() for c in U.controls(w)):
+                    U.click(U.find(w, text="No"))
+            buttons = {c.text.replace("&", "").lower(): c for c in U.find_all(open_[0], cls="Button") if c.text}
+            status = " ".join(c.text.lower() for c in U.find_all(open_[0], cls="Static"))
+            if "close" in buttons and "cancel" not in buttons and "finished" in status:
+                # with no warnings the dialog closes itself in a moment; with warnings it waits to be closed
+                finished_at = finished_at or time.time()
+                if time.time() - finished_at > 6:
+                    warnings = U.listbox_items(open_[0])
+                    U.click(buttons["close"])
+                    U.wait_gone(open_[0], 30)
+                    break
+        except Exception as e:                               # the dialog closed while being read
+            if type(e).__name__ != "error":
+                raise
+        if time.time() - t0 > timeout:
+            raise InventorError(f"the solve is still running after {timeout:.0f} s; leave Inventor alone until it ends")
         time.sleep(0.5)
     time.sleep(1.0)
-    return time.time() - t0
+    return time.time() - t0, warnings
 
 
-def _report(s: Session, pid: int, name: str, timeout: float = 120.0) -> str:
-    _run_command(s, "FeaGenerateReportCmd")
-    h = _dialog(pid, "Report")
-    U.set_text(U.find(h, cid=10110), name)             # file name (a plain edit box)
-    started = time.time()
-    prompts_before = _openwith_pids()
-    U.click(U.find(h, cid=1))
-    U.wait_gone(h, 30)
-    _close_open_with_prompts(prompts_before)
+def _answer_results_prompt(pid: int) -> int:
+    """Inventor's "results are out of date, continue?" prompt is a WPF window with no controls to read."""
+    import win32con
+    import win32gui
+    n = 0
+    for h, cls, title in U.window_rows(pid):
+        if title == "Stress Analysis" and cls.startswith("HwndWrapper"):
+            _front(h)
+            win32gui.PostMessage(h, win32con.WM_KEYDOWN, win32con.VK_RETURN, 0)
+            win32gui.PostMessage(h, win32con.WM_KEYUP, win32con.VK_RETURN, 0)
+            n += 1
+    return n
+
+
+def _tick_only_study(s: Session, pid: int, h: int, study: str) -> None:
+    """In the Report dialog: Custom, Studies page, untick everything, tick one study with a real click (the tree ignores
+    ticks set by messages, and an empty selection gives an empty report)."""
+    import win32api
+    U.click(U.find(h, cid=10107))                      # Custom
+    time.sleep(0.8)
+    tab = next(c for c in U.controls(h) if c.cls == "SysTabControl32" and "Studies" in U.tab_labels(c.hwnd))
+    U.tab_select(tab.hwnd, U.tab_labels(tab.hwnd).index("Studies"))
+    U.click(U.find(h, cid=10117))                      # Select All: ticks Inventor takes in full, results included
+    time.sleep(0.5)
+    tree = U.find(h, cid=10120)
+    roots = [it for it in U.tree_items(tree.hwnd) if it["depth"] == 0]
+    if not any(it["label"].strip() == study for it in roots):
+        raise InventorError(f"study {study!r} is not in the report's list")
+    _front(h)
+
+    def state(item):
+        return next(it for it in U.tree_items(tree.hwnd) if it["item"] == item)["checked"]
+
+    def tick(item, want: bool) -> bool:
+        x0, y0, _x1, y1 = U.tree_item_rect(tree.hwnd, item)
+        y = (y0 + y1) // 2
+        for x in (x0 - 9, x0 - 11, x0 - 7):            # the tick box sits just left of the label
+            _click_screen(x, y, pid, "a tick box in the report's study list")
+            win32api.SetCursorPos((x0 + 120, y1 + 60))
+            time.sleep(0.4)
+            if state(item) == want:
+                return True
+        return False
+
+    for it in roots:                                   # untick every other study
+        if it["label"].strip() != study and state(it["item"]) and not tick(it["item"], False):
+            raise InventorError(f"could not untick study {it['label']!r} in the report's list")
+    if os.environ.get("INVENTOR_FORGE_DEBUG"):
+        print("report tree", [(it["depth"], it["label"], it["checked"]) for it in U.tree_items(tree.hwnd)][:40], flush=True)
+
+
+def _report(s: Session, pid: int, name: str, timeout: float = 1800.0, front: bool = True, only_study: str = "") -> str:
+    """Generate Inventor's report and return its path. Covers every study in the file, so it takes minutes on a
+    file with many; read_result_maximum is the quick way to get peak values."""
+    import win32gui
+    # everything that needs COM happens before the report starts
     docs = os.path.join(os.path.expanduser("~"), "Documents")
     folders = [os.path.join(docs, "Inventor"), docs]
     proj = safe(lambda: s.app.DesignProjectManager.ActiveDesignProject.WorkspacePath, "")
@@ -423,7 +847,37 @@ def _report(s: Session, pid: int, name: str, timeout: float = 120.0) -> str:
     part_dir = os.path.dirname(safe(lambda: s.doc().FullFileName, "") or "")
     if part_dir:
         folders.insert(0, part_dir)
+    main = s.app.MainFrameHWND
+    _enter_analysis(s)
+    _run_command(s, "FeaExResultsCmd")                # the report won't start while a result is on show
+    time.sleep(1.0)
+    _run_command(s, "FeaGenerateReportCmd")
     t0 = time.time()
+    h = 0
+    while not h:                                       # slow to appear on files with many studies
+        _answer_results_prompt(pid)
+        try:
+            h = _dialog(pid, "Report", timeout=3, front=front)
+        except InventorError:
+            if time.time() - t0 > 180:
+                raise
+    U.set_text(U.find(h, cid=10110), name)             # file name (a plain edit box)
+    if only_study:
+        _tick_only_study(s, pid, h, only_study)
+    started = time.time()
+    prompts_before = _openwith_pids()
+    U.click(U.find(h, cid=1))
+    U.wait_gone(h, 30)
+    time.sleep(2.0)
+    while any("report" in win32gui_text(w).lower() for w in U.process_windows(pid) if w != main):
+        if pid not in U.pids_named("Inventor.exe"):
+            raise InventorError("Inventor closed while writing the report")
+        if time.time() - started > timeout:
+            raise InventorError(f"the report is still running after {timeout:.0f} s; leave Inventor alone until it ends")
+        time.sleep(1.0)
+    _close_open_with_prompts(prompts_before)
+    t0 = time.time()
+    timeout = 120.0
     while time.time() - t0 < timeout:
         for fo in folders:
             for p in glob.glob(os.path.join(fo, "**", name + ".htm*"), recursive=True) if os.path.isdir(fo) else []:
@@ -435,24 +889,7 @@ def _report(s: Session, pid: int, name: str, timeout: float = 120.0) -> str:
 
 
 def _openwith_pids() -> set[int]:
-    import ctypes
-    import win32api
-    import win32process
-    out = set()
-    for pid in win32process.EnumProcesses():
-        try:
-            hp = win32api.OpenProcess(0x1000, False, pid)        # PROCESS_QUERY_LIMITED_INFORMATION
-        except Exception:
-            continue
-        try:
-            buf = ctypes.create_unicode_buffer(512)
-            size = ctypes.c_ulong(512)
-            ctypes.windll.kernel32.QueryFullProcessImageNameW(int(hp.handle), 0, buf, ctypes.byref(size))
-            if os.path.basename(buf.value).lower() == "openwith.exe":
-                out.add(pid)
-        finally:
-            win32api.CloseHandle(hp)
-    return out
+    return set(U.pids_named("OpenWith.exe"))
 
 
 def _close_open_with_prompts(existing: set[int], wait: float = 6.0) -> int:
@@ -498,9 +935,12 @@ def parse_report(path: str, study: str = "") -> dict:
     """Parse one study of an Inventor stress report (the report lists every study in the document;
     by default the last one, i.e. the study just run)."""
     lines = _report_text(path)
-    heads = [i for i, ln in enumerate(lines) if re.match(r"^(Static|Modal) Analysis:\d+$", ln)]
+    heads = [i for i, ln in enumerate(lines)            # a study's heading comes right before its settings table
+             if i + 1 < len(lines) and lines[i + 1].lower().startswith("general objective and settings")]
     if heads:
-        pick = [i for i in heads if lines[i] == study] if study else []
+        pick = [i for i in heads if lines[i].lower() == study.lower()] if study else []
+        if study and not pick:
+            raise InventorError(f"study {study!r} is not in this report; it has {[lines[i] for i in heads]}")
         start = pick[0] if pick else heads[-1]
         nxt = [i for i in heads if i > start]
         name = lines[start]
@@ -574,11 +1014,24 @@ def parse_report(path: str, study: str = "") -> dict:
 
 # --------------------------------------------------------------------------- tools
 def _check_ready(s: Session) -> None:
-    d = s.part()
-    if s.cdef().SurfaceBodies.Count == 0:
-        raise InventorError("the part has no solid body")
-    if safe(lambda: d.ActiveMaterial.DisplayName, "Generic") in ("Generic", "", None):
-        raise InventorError("assign a material first (set_material) — Inventor's Generic material has no strength data")
+    d = s.doc()
+    if s.kind(d) == "assembly":
+        generic = []
+        for o in items(d.ComponentDefinition.Occurrences.AllLeafOccurrences):
+            md = safe(lambda o=o: o.Definition.Document)
+            if md is not None and safe(lambda md=md: md.ActiveMaterial.DisplayName, "Generic") in ("Generic", "", None):
+                generic.append(o.Name)
+        if generic:
+            raise InventorError(f"components with Inventor's Generic material (no strength data): {generic[:10]} — set a material in each part first")
+    else:
+        d = s.part()
+        if s.cdef().SurfaceBodies.Count == 0:
+            raise InventorError("the part has no solid body")
+        if safe(lambda: d.ActiveMaterial.DisplayName, "Generic") in ("Generic", "", None):
+            raise InventorError("assign a material first (set_material) — Inventor's Generic material has no strength data")
+    free_gb = shutil.disk_usage(os.path.expanduser("~")).free / 2 ** 30
+    if free_gb < 2:
+        raise InventorError(f"only {free_gb:.1f} GB free on the system drive; a solved study can use hundreds of MB")
 
 
 KBM_NOTICE = (
@@ -599,8 +1052,12 @@ def _notice_gate(user_notified: bool, what: str) -> dict | None:
 
 
 @tool("analysis")
-def analyze_stress(s: Session, fixed_faces: list[int], loads: list[dict] | None = None, gravity: bool = False,
-                   mesh_fraction: float = 0.0, name: str = "", user_notified: bool = False) -> dict:
+def analyze_stress(s: Session, fixed_faces: list | None = None, loads: list[dict] | None = None, gravity: bool = False,
+                   mesh_fraction: float = 0.0, name: str = "", user_notified: bool = False,
+                   frictionless_faces: list | None = None, pin_faces: list | None = None,
+                   study_name: str = "", contact_type: str = "", contacts: list[dict] | None = None,
+                   local_mesh: list[dict] | None = None, refinements: int = 0, convergence_percent: float = 10.0,
+                   model_state: str = "") -> dict:
     """Static stress analysis in Inventor's own Stress Analysis environment. TAKES OVER THE MOUSE AND
     KEYBOARD for the duration (faces are picked in the viewport; Inventor must be visible and nobody should
     touch the mouse). Creates a study, fixes the faces, applies the loads, simulates, and reads Inventor's
@@ -608,7 +1065,21 @@ def analyze_stress(s: Session, fixed_faces: list[int], loads: list[dict] | None 
     (equilibrium check against the applied loads), plus a picture of the stress plot.
 
     fixed_faces: face indices (list_faces) held fixed
-    loads: [{"face": 5, "force": [0, 0, -200]} (N, total)  or  {"face": 5, "pressure": 2.0} (MPa)]
+    loads: [{"face": 5, "force": [0, 0, -200]} (N, total)  or  {"face": 5, "pressure": 2.0} (MPa)]; use
+      "faces": [5, 6] for several faces (a force is then the total, shared across them)
+    frictionless_faces: face indices that can slide but not lift (they hold in tension too)
+    pin_faces: cylindrical faces free to rotate about their axis
+    study_name: name for the study in Inventor's browser
+    Assemblies: faces are "Component:1/5" (face 5 of that component, numbered as in inspect_assembly(faces_of=...)).
+    contact_type: default type for the automatic contacts between touching components: Bonded (default), Separation,
+      Sliding / No Separation, Separation / No Sliding, Shrink Fit / Sliding, Shrink Fit / No Sliding, Spring
+    contacts: change particular contacts afterwards: [{"between": ["Base:1", "Beam:1"], "type": "Separation"}]
+    loads also take {"face": f, "moment": [Mx, My, Mz]} (N·m), {"face": f, "bearing": [Fx, Fy, Fz]} (N, on a round face),
+      {"face": f, "remote_force": [Fx, Fy, Fz], "point": [x, y, z]} (N, acting at a point in mm, e.g. a tow hook)
+    local_mesh: finer mesh on chosen faces: [{"faces": [5], "size": 2.0}] (mm)
+    refinements: Inventor's own mesh convergence: up to this many automatic refinements where stress changes most
+    convergence_percent: stop refining when the peak changes less than this
+    model_state: analyse the assembly in this model state
     gravity: add self-weight in -Z
     mesh_fraction: Inventor's average element size as a fraction of the bounding box (default 0.1;
       0.05 is finer and slower) — run twice with two values to check convergence
@@ -618,46 +1089,79 @@ def analyze_stress(s: Session, fixed_faces: list[int], loads: list[dict] | None 
     gate = _notice_gate(user_notified, "analyze_stress")
     if gate:
         return gate
-    if not fixed_faces:
-        raise InventorError("give at least one fixed face")
+    fixed_faces, frictionless_faces, pin_faces = fixed_faces or [], frictionless_faces or [], pin_faces or []
+    if not (fixed_faces or frictionless_faces or pin_faces):
+        raise InventorError("give at least one supported face (fixed_faces, frictionless_faces or pin_faces)")
     loads = loads or []
     if not loads and not gravity:
         raise InventorError("no loads — give loads=[...] and/or gravity=true")
     _check_ready(s)
-    fixed = [s.face(i) for i in fixed_faces]
-    load_faces = [(s.face(int(ld["face"])), ld) for ld in loads]
+    fixed = [face_ref(s, i) for i in fixed_faces]
+    sliding = [face_ref(s, i) for i in frictionless_faces]
+    pinned = [face_ref(s, i) for i in pin_faces]
+    load_faces = [([face_ref(s, i) for i in (ld.get("faces") or [ld["face"]])], ld) for ld in loads]
+    meshes = [([face_ref(s, i) for i in m.get("faces") or [m["face"]]], float(m["size"])) for m in local_mesh or []]
+    is_asm = s.kind() == "assembly"
     pid = _pid(s)
     applied = [0.0, 0.0, 0.0]
     tag = name or f"forge_{time.strftime('%H%M%S')}"
     t0 = time.time()
     _bring_to_front(s)
     _enter_analysis(s)
-    _create_study(s, pid)
+    _create_study(s, pid, study_name=study_name, contact_type=contact_type, model_state=model_state)
+    contact_rows = []
+    if is_asm:
+        _auto_contacts(s, pid)
+        from .studies import _contact_rows, _set_contact
+        for c in contacts or []:
+            _set_contact(s, pid, study_name or None, c.get("between") or [], c["type"])
+        contact_rows = safe(lambda: _contact_rows(s, study_name or None), [])
     if mesh_fraction:
         _mesh(s, pid, mesh_fraction)
-    _fixed(s, pid, fixed)
-    for face, ld in load_faces:
+    for mfaces, size in meshes:
+        _local_mesh(s, pid, mfaces, size)
+    if refinements:
+        _convergence(s, pid, refinements, convergence_percent)
+    if fixed:
+        _support(s, pid, fixed)
+    if sliding:
+        _support(s, pid, sliding, "Frictionless")
+    if pinned:
+        _support(s, pid, pinned, "Pin")
+    for faces, ld in load_faces:
         if ld.get("force"):
             vec = [float(v) for v in ld["force"]]
-            _force(s, pid, face, vec)
+            _force(s, pid, faces, vec)
             applied = [applied[i] + vec[i] for i in range(3)]
+        elif ld.get("bearing"):
+            vec = [float(v) for v in ld["bearing"]]
+            _vector_load(s, pid, "FeaCreateLoadBearingCmd", "Bearing Load", faces, vec, "N")
+            applied = [applied[i] + vec[i] for i in range(3)] if applied is not None else None
+        elif ld.get("remote_force"):
+            vec = [float(v) for v in ld["remote_force"]]
+            _vector_load(s, pid, "FeaCreateLoadRemoteForceCmd", "Remote Force", faces, vec, "N", point=ld.get("point") or [0, 0, 0])
+            applied = [applied[i] + vec[i] for i in range(3)] if applied is not None else None
+        elif ld.get("moment"):
+            vec = [float(v) * 1000.0 for v in ld["moment"]]          # N·m -> N mm, the dialog's unit
+            _vector_load(s, pid, "FeaCreateLoadMomentCmd", "Moment", faces, vec, "N mm")
         elif ld.get("pressure"):
             p = float(ld["pressure"])
-            _pressure(s, pid, face, p)
-            n = face_normal(face)
-            area = face.Evaluator.Area * 100
-            if face.SurfaceType == K.kPlaneSurface:
-                applied = [applied[i] - p * area * n[i] for i in range(3)]
-            else:
-                applied = None if applied is None else applied   # curved: resultant not tracked
+            _pressure(s, pid, faces, p)
+            for face in faces:
+                if face.SurfaceType != K.kPlaneSurface:          # curved: resultant not tracked
+                    applied = None
+                elif applied is not None:
+                    n = face_normal(face)
+                    area = face.Evaluator.Area * 100
+                    applied = [applied[i] - p * area * n[i] for i in range(3)]
         else:
-            raise InventorError(f"load needs force or pressure: {ld}")
+            raise InventorError(f"load needs force, pressure, bearing, moment or remote_force: {ld}")
     if gravity:
         _gravity(s, pid)
-        w = s.cdef().MassProperties.Mass * 9.81
+        w = _any_cdef(s).MassProperties.Mass * 9.81
         if applied is not None:
             applied[2] -= w
-    solve_s = _simulate(s, pid)
+    solve_s, solver_warnings = _simulate(s, pid)
     report = _report(s, pid, tag)
     res = parse_report(report)
     sm = res["summary"]
@@ -673,6 +1177,10 @@ def analyze_stress(s: Session, fixed_faces: list[int], loads: list[dict] | None 
            "safety_factor_min": mx("Safety Factor", "min"),
            "reactions": res["reactions"], "loads_echo": res["loads"], "material": res["material"],
            "report": report, "solve_seconds": r(solve_s, 1), "total_seconds": r(time.time() - t0, 1)}
+    if solver_warnings:
+        out["solver_warnings"] = solver_warnings
+    if contact_rows:
+        out["contacts"] = contact_rows
     y = _num(res["material"].get("yield_MPa", "") or "")
     if y and out["max_von_mises_MPa"]:
         out["safety_factor_yield"] = r(y / out["max_von_mises_MPa"], 3)
@@ -684,8 +1192,9 @@ def analyze_stress(s: Session, fixed_faces: list[int], loads: list[dict] | None 
         out["equilibrium_error_pct"] = r(100 * math.sqrt(sum((rf[k] + applied[k]) ** 2 for k in range(3))) / mag, 3)
     # independent check that the right faces were picked: the reaction moment at a single fixed face
     # must equal the moment of the applied forces about that face's centre
-    force_loads = [(f, ld) for f, ld in load_faces if ld.get("force")]
-    if len(fixed) == 1 and force_loads and len(force_loads) == len(load_faces) and not gravity and res["reactions"]:
+    force_loads = [(fs[0], ld) for fs, ld in load_faces if ld.get("force") and len(fs) == 1]
+    if (len(fixed) == 1 and not sliding and not pinned and force_loads and len(force_loads) == len(load_faces)
+            and not gravity and res["reactions"] and not is_asm):
         c0 = face_centroid(fixed[0])
         m = [0.0, 0.0, 0.0]
         for f, ld in force_loads:
@@ -722,8 +1231,8 @@ def _iso_result_view(s: Session) -> None:
 
 
 @tool("analysis")
-def analyze_modes(s: Session, fixed_faces: list[int], modes: int = 6, name: str = "",
-                  user_notified: bool = False) -> dict:
+def analyze_modes(s: Session, fixed_faces: list, modes: int = 6, name: str = "",
+                  user_notified: bool = False, study_name: str = "") -> dict:
     """Natural frequencies with Inventor's Stress Analysis (modal study). TAKES OVER THE MOUSE AND KEYBOARD
     while it runs (faces are picked in the viewport). Returns the frequencies from Inventor's report.
     Needs user_notified=true (see analyze_stress)."""
@@ -733,14 +1242,16 @@ def analyze_modes(s: Session, fixed_faces: list[int], modes: int = 6, name: str 
     if not fixed_faces:
         raise InventorError("give at least one fixed face")
     _check_ready(s)
-    fixed = [s.face(i) for i in fixed_faces]
+    fixed = [face_ref(s, i) for i in fixed_faces]
     pid = _pid(s)
     tag = name or f"forge_modal_{time.strftime('%H%M%S')}"
     _bring_to_front(s)
     _enter_analysis(s)
-    _create_study(s, pid, modal_modes=int(modes))
-    _fixed(s, pid, fixed)
-    solve_s = _simulate(s, pid)
+    _create_study(s, pid, modal_modes=int(modes), study_name=study_name)
+    if s.kind() == "assembly":
+        _auto_contacts(s, pid)
+    _support(s, pid, fixed)
+    solve_s, _ = _simulate(s, pid)
     report = _report(s, pid, tag)
     res = parse_report(report)
     freqs = res.get("frequencies_Hz", [])

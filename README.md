@@ -11,7 +11,7 @@ Analysis environment, which has no API and is therefore driven with the mouse an
 > During the run, keep Inventor visible and don't touch the mouse; a click that would land outside Inventor
 > stops the run. Every other tool works purely through the API.
 
-It is written from Inventor's type library and API documentation. It also powers the Inventor backend of the hermes-cad plugin for Hermes Agent.
+It is written from Inventor's type library and API documentation. It also powers the Inventor backend of the [ShapeRotator](https://github.com/RobertBarnettProjects/hermes-shaperotator) plugin for Hermes Agent.
 
 | | |
 |---|---|

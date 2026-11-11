@@ -513,3 +513,99 @@ def set_material(s: Session, name: str) -> dict:
         out["other_matches"] = [m.DisplayName for m in partial[1:10]]
     out["mass_kg"] = r(d.ComponentDefinition.MassProperties.Mass, 5)
     return out
+
+
+@tool("inspect", mutates=False)
+def face_at_point(s: Session, x: float, y: float, z: float, tolerance: float = 0.5) -> dict:
+    """The face a point (mm) lies on — for references picked in a viewer. Unlike find_face (nearest face centre) this
+    checks the surface itself, and says when the point is on an edge shared by two faces.
+
+    tolerance: how far off the surface the point may be, mm
+    """
+    from ..com import typed_call as _tc
+    cd = s.cdef()
+    out = _tc(cd, "FindUsingPoint", s.p3(x, y, z), [K.kFaceObject], tolerance * 0.1, False)
+    found = list(items(out[-1] if isinstance(out, tuple) else out))
+    keys = {f.TransientKey: i for i, f in enumerate(s.faces(), 1)}
+    hits = [keys[f.TransientKey] for f in found if safe(lambda f=f: f.TransientKey) in keys]
+    if not hits:
+        raise InventorError(f"no face within {tolerance} mm of ({x}, {y}, {z})")
+    return {"face": hits[0], "ambiguous": len(hits) > 1, "candidates": hits[:6],
+            "match": face_row(s, hits[0], s.face(hits[0]))}
+
+
+@tool("materials", mutates=False)
+def material_properties(s: Session) -> dict:
+    """Young's modulus (MPa), Poisson's ratio, density (kg/m³), yield and ultimate strength (MPa) of the part's material."""
+    return material_data(s)
+
+
+@tool("materials")
+def create_material(s: Session, name: str, base: str = "Steel, Mild", yield_MPa: float | None = None,
+                    ultimate_MPa: float | None = None, E_MPa: float | None = None, poisson: float | None = None,
+                    density_kg_m3: float | None = None) -> dict:
+    """Make a named material in the active part from a library one, with your own strengths, and assign it — for
+    grades the library lacks, e.g. name="AS/NZS 1163 C250L0", yield_MPa=250, ultimate_MPa=320. Stress Analysis uses
+    these values, so the safety factor is against the right yield."""
+    d = s.part()
+    lib, mats = _library_materials(s)
+    src = [m for m in mats if m.DisplayName.lower() == base.lower()] or [m for m in mats if base.lower() in m.DisplayName.lower()]
+    if not src:
+        raise InventorError(f"no library material matching {base!r}")
+    try:
+        mat = d.MaterialAssets.Item(name)
+    except Exception:
+        local = safe(lambda: d.MaterialAssets.Item(src[0].DisplayName)) or src[0].CopyTo(d)
+        mat = local.Duplicate(name)
+    phys = mat.PhysicalPropertiesAsset
+    isolated = safe(lambda: phys.DisplayName, "") == name
+    if not isolated:                         # give the new material its own physical asset when Inventor allows it
+        try:
+            dup = phys.Duplicate(name)
+            mat.PhysicalPropertiesAsset = dup
+            phys, isolated = mat.PhysicalPropertiesAsset, True
+        except Exception:
+            pass
+
+    def put(keys, value):
+        if value is None:
+            return
+        for k in keys:
+            try:
+                phys.Item(k).Value = value
+                return
+            except Exception:
+                continue
+        raise InventorError(f"could not set {keys[0]} on {name}")
+    put(["structural_Minimum_yield_stress"], float(yield_MPa) * 1000 if yield_MPa else None)
+    put(["structural_Minimum_tensile_strength"], float(ultimate_MPa) * 1000 if ultimate_MPa else None)
+    put(["structural_Young_modulus", "structural_YoungModulus"], float(E_MPa) * 1000 if E_MPa else None)
+    put(["structural_Poisson_ratio"], poisson)
+    put(["structural_Density"], density_kg_m3)
+    d.ActiveMaterial = mat
+    d.Update()
+    out = {"material": name, "based_on": src[0].DisplayName, "own_physical_asset": isolated, **material_data(s, d)}
+    if not isolated:
+        out["warning"] = ("Inventor would not give this material its own physical-properties asset, so the values were "
+                          f"written to the asset it shares with {src[0].DisplayName} in this document only")
+    if yield_MPa and abs((out.get("yield_MPa") or 0) - float(yield_MPa)) > 0.5:
+        out["warning"] = f"yield reads back as {out.get('yield_MPa')} MPa, not {yield_MPa}"
+    out["mass_kg"] = r(d.ComponentDefinition.MassProperties.Mass, 5)
+    return out
+
+
+@tool("materials")
+def set_appearance(s: Session, name: str) -> dict:
+    """Give the active part a library appearance (colour/finish only; mass and stress use the material), by exact or
+    partial name, e.g. "Rubber - Black", "Powder Coat - Red", "Chrome - Polished"."""
+    d = s.part()
+    lib = s.app.ActiveAppearanceLibrary
+    apps = list(items(lib.AppearanceAssets))
+    pick = [a for a in apps if a.DisplayName.lower() == name.lower()] or [a for a in apps if name.lower() in a.DisplayName.lower()]
+    if not pick:
+        raise InventorError(f"no appearance matching {name!r}; e.g. {', '.join(a.DisplayName for a in apps[:12])}")
+    a = pick[0]
+    local = safe(lambda: d.AppearanceAssets.Item(a.DisplayName)) or a.CopyTo(d)
+    d.ActiveAppearance = local
+    d.Update()
+    return {"appearance": a.DisplayName, "other_matches": [x.DisplayName for x in pick[1:6]]}

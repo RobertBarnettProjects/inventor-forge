@@ -574,3 +574,251 @@ def emboss_text(s: Session, text: str, x: float = 0.0, y: float = 0.0, depth: fl
     out = s.delta(feat.Name, before)
     out["feature"] = feat.Name
     return out
+
+
+def _on_side(px, py, members, skip) -> bool:
+    """Does an end point lie inside another member's centre line (a T-joint, not a corner)?"""
+    for j, (a1, b1, a2, b2) in enumerate(members, 1):
+        if j == skip:
+            continue
+        L = math.hypot(a2 - a1, b2 - b1)
+        if L < 1e-9:
+            continue
+        t = ((px - a1) * (a2 - a1) + (py - b1) * (b2 - b1)) / L ** 2
+        if 1e-6 < t < 1 - 1e-6 and math.hypot(a1 + t * (a2 - a1) - px, b1 + t * (b2 - b1) - py) < 1e-3:
+            return True
+    return False
+
+
+def _corner(px, py, members, skip) -> bool:
+    return any(j != skip and (math.hypot(a1 - px, b1 - py) < 1e-3 or math.hypot(a2 - px, b2 - py) < 1e-3)
+               for j, (a1, b1, a2, b2) in enumerate(members, 1))
+
+
+def _cut_list(members: list[list[float]], width: float) -> list[dict]:
+    """Length and end angles of each member, as a fabricator cuts them: an end that meets another member at a corner
+    is mitred at half the angle between them; a free end or a member butting into another's side is square."""
+    rows = []
+    for i, (x1, y1, x2, y2) in enumerate(members, 1):
+        length = math.hypot(x2 - x1, y2 - y1)
+        ends = []
+        for (px, py), (qx, qy) in (((x1, y1), (x2, y2)), ((x2, y2), (x1, y1))):
+            angle = 90.0
+            for j, (a1, b1, a2, b2) in enumerate(members, 1):
+                if j == i:
+                    continue
+                for (ex, ey), (fx, fy) in (((a1, b1), (a2, b2)), ((a2, b2), (a1, b1))):
+                    if math.hypot(ex - px, ey - py) < 1e-3:          # two members meet end to end: a mitred corner
+                        u = math.atan2(qy - py, qx - px)
+                        v = math.atan2(fy - ey, fx - ex)
+                        between = abs((math.degrees(u - v) + 180) % 360 - 180)
+                        angle = between / 2
+            ends.append(round(angle, 1))
+        stock = length
+        for (px, py), a in zip(((x1, y1), (x2, y2)), ends):
+            if _on_side(px, py, members, i):
+                stock -= width / 2                     # butts into the side of another tube
+            elif 1 < a < 89.9:
+                stock += (width / 2) / math.tan(math.radians(a))   # mitred: the outside edge runs past the centre line
+        rows.append({"member": i, "length_mm": round(length, 1), "end_angles_deg": ends, "stock_length_mm": round(stock, 1),
+                     "joints": ["corner" if _corner(px, py, members, i) else "tee" if _on_side(px, py, members, i) else "free"
+                                for px, py in ((x1, y1), (x2, y2))]})
+    return rows
+
+
+def _frame_params(s: Session, height: float, wall: float) -> list[str]:
+    """User parameters Frame_Height and Frame_Wall drive the frame, so a change shows in the design history."""
+    ups = s.cdef().Parameters.UserParameters
+    made = []
+    for name, val in (("Frame_Height", height), ("Frame_Wall", wall)):
+        if val <= 0:
+            continue
+        p = safe(lambda name=name: ups.Item(name))
+        if p is None:
+            ups.AddByExpression(name, f"{val:g} mm", "mm")
+        else:
+            p.Expression = f"{val:g} mm"
+        made.append(name)
+    return made
+
+
+@tool("features")
+def frame_members(s: Session, members: list[list[float]], width: float = 32.0, height: float = 32.0, wall: float = 0.0,
+                  z: float = 0.0, name: str = "Frame") -> dict:
+    """A welded box-section frame in one step, from member centre lines in the XY plane: every member becomes a
+    width x height bar, all joined into one solid; wall > 0 then hollows it into tube of that wall thickness (do this
+    before adding pads and brackets, which should stay solid). Returns a cut list: each member's centre-line length, its
+    end angles (between the cut face and the member's axis: 90 = square cut, 45 = mitred corner) and the stock length to cut.
+
+    members: [[x1, y1, x2, y2], ...] centre lines in mm; members that share an end point form a mitred corner
+    width: section width across the centre line, mm
+    height: section height (extruded upwards from z), mm
+    wall: tube wall thickness, mm (0 = solid bar); height and wall become the user parameters Frame_Height and Frame_Wall,
+      so set_parameter(Frame_Wall, "2.5 mm") makes the tubes thinner
+    z: height of the underside, mm
+    """
+    from .sketch import create_sketch, draw_closed_profile
+    if not members:
+        raise InventorError("give at least one member [x1, y1, x2, y2]")
+    before = s.snapshot()
+    create_sketch(s, plane="XY", offset=z)
+    hw = width / 2.0
+    for x1, y1, x2, y2 in members:
+        L = math.hypot(x2 - x1, y2 - y1)
+        if L < 1e-6:
+            raise InventorError("a member has zero length")
+        ux, uy = (x2 - x1) / L, (y2 - y1) / L
+        nx, ny = -uy * hw, ux * hw
+        i = members.index([x1, y1, x2, y2]) + 1
+        # only an end at a corner runs on by half a width (so the corner closes); free ends and tee ends stop at the line
+        e1 = hw if _corner(x1, y1, members, i) else 0.0
+        e2 = hw if _corner(x2, y2, members, i) else 0.0
+        draw_closed_profile(s, [[x1 - ux * e1 + nx, y1 - uy * e1 + ny], [x2 + ux * e2 + nx, y2 + uy * e2 + ny],
+                                [x2 + ux * e2 - nx, y2 + uy * e2 - ny], [x1 - ux * e1 - nx, y1 - uy * e1 - ny]])
+    members = [list(map(float, m)) for m in members]
+    ext = extrude(s, distance=height, direction="positive", operation="join" if s.snapshot().bodies else "new_body")
+    feats = [ext.get("feature")]
+    params = _frame_params(s, height, wall)
+    ef = s.cdef().Features.ExtrudeFeatures.Item(s.cdef().Features.ExtrudeFeatures.Count)
+    safe(lambda: setattr(ef.Definition.Extent.Distance, "Expression", "Frame_Height"))
+    if wall > 0:
+        try:
+            feats.append(shell(s, thickness=wall).get("feature"))
+        except Exception as e:                       # leave no half-built frame behind
+            safe(lambda: ef.Delete())
+            raise InventorError(f"frame_members: hollowing failed ({e}); nothing was kept") from e
+        sf = s.cdef().Features.ShellFeatures.Item(s.cdef().Features.ShellFeatures.Count)
+        safe(lambda: setattr(sf.Definition.Thickness, "Expression", "Frame_Wall"))
+        s.doc().Update()
+    out = s.delta(name, before)
+    out.update(features=feats, members=len(members), cut_list=_cut_list(members, width), parameters=params,
+               total_length_mm=round(sum(math.hypot(m[2] - m[0], m[3] - m[1]) for m in members), 1))
+    return out
+
+
+def _tube_members(members, od, wall):
+    out = []
+    for m in members:
+        if isinstance(m, dict):
+            line, mod, mwall = m.get("line") or m.get("points"), float(m.get("od", od)), float(m.get("wall", wall))
+            label = m.get("name", "")
+        else:
+            line, mod, mwall, label = m, float(od), float(wall), ""
+        if not line or len(line) != 6:
+            raise InventorError("each member is [x1, y1, z1, x2, y2, z2] (or {line: [...], od, wall, name})")
+        line = [float(v) for v in line]
+        if math.dist(line[:3], line[3:]) < 1e-6:
+            raise InventorError("a member has zero length")
+        if mwall * 2 >= mod or mwall < 0:
+            raise InventorError(f"wall {mwall} mm doesn't fit a {mod} mm tube (0 = solid rod)")
+        out.append({"a": line[:3], "b": line[3:], "od": mod, "wall": mwall, "name": label})
+    return out
+
+
+def _end_kind(p, i, ms) -> str:
+    """corner: the end meets another member's end at an angle; inline: it continues another member straight on;
+    tee: it lands on another member's side; free otherwise."""
+    me = ms[i]
+    d0 = [me["b"][k] - me["a"][k] for k in range(3)]
+    shared = []
+    for j, m in enumerate(ms):
+        if j == i:
+            continue
+        if math.dist(p, m["a"]) < 0.01 or math.dist(p, m["b"]) < 0.01:
+            d1 = [m["b"][k] - m["a"][k] for k in range(3)]
+            c = abs(sum(d0[k] * d1[k] for k in range(3))) / (math.dist(me["a"], me["b"]) * math.dist(m["a"], m["b"]))
+            shared.append(c)
+    if shared:
+        return "inline" if all(c > 0.985 for c in shared) else "corner"
+    for j, m in enumerate(ms):
+        if j == i:
+            continue
+        a, b = m["a"], m["b"]
+        ab = [b[k] - a[k] for k in range(3)]
+        L2 = sum(v * v for v in ab)
+        t = sum((p[k] - a[k]) * ab[k] for k in range(3)) / L2
+        if 0 < t < 1 and math.dist(p, [a[k] + t * ab[k] for k in range(3)]) < m["od"] / 2 + 0.01:
+            return "tee"
+    return "free"
+
+
+@tool("features")
+def tube_frame(s: Session, members: list, od: float = 33.7, wall: float = 2.6, name: str = "Tube frame") -> dict:
+    """A welded round-tube (CHS) frame in 3D, in one step: each member is a straight tube on a centre line
+    [x1, y1, z1, x2, y2, z2] (mm). All members are swept solid and joined, then bored to the wall thickness, so
+    joints are welded and tee'd tubes are coped into their neighbours. Ends that meet another member's end (corners)
+    run on by half a diameter so the corner closes. Use real sizes (e.g. AS/NZS 1163 CHS 33.7x2.6, 26.9x2.3).
+    Returns centreline lengths and untrimmed axial blank lengths including corner run-ons. Tee blanks reach the host centreline for subsequent coping. Stock lengths use the constructed sweep extents.
+
+    members: [[x1, y1, z1, x2, y2, z2], ...] or [{"line": [...], "od": 26.9, "wall": 2.3, "name": "seat cross"}, ...]
+    od: default outside diameter, mm
+    wall: default wall thickness, mm (0 = solid rod; a short solid member makes a disc, e.g. a mounting tab)
+    """
+    ms = _tube_members(members, od, wall)
+    if not ms:
+        raise InventorError("give at least one tube member")
+    tx = s.app.TransactionManager.StartTransaction(s.doc(), name)
+    try:
+        before = s.snapshot()
+        cd = s.cdef()
+        feats = cd.Features
+        sk3 = cd.Sketches3D.Add()
+        lines, extended = [], []
+        for i, m in enumerate(ms):
+            a, b = list(m["a"]), list(m["b"])
+            L = math.dist(a, b)
+            u = [(b[k] - a[k]) / L for k in range(3)]
+            ka, kb = _end_kind(m["a"], i, ms), _end_kind(m["b"], i, ms)
+            m["ends"] = [ka, kb]
+            ea = m["od"] / 2 if ka == "corner" else 0.0
+            eb = m["od"] / 2 if kb == "corner" else 0.0
+            a2 = [a[k] - u[k] * ea for k in range(3)]
+            b2 = [b[k] + u[k] * eb for k in range(3)]
+            lines.append(sk3.SketchLines3D.AddByTwoPoints(s.p3(*a2), s.p3(*b2)))
+            extended.append((a2, b2))
+    
+        def sweep(i, radius, op):
+            ln = lines[i]
+            wp = cd.WorkPlanes.AddByNormalToCurve(ln, ln.StartSketchPoint)
+            safe(lambda: setattr(wp, "Visible", False))
+            sk = cd.Sketches.Add(wp)
+            c = sk.ModelToSketchSpace(s.p3(*extended[i][0]))
+            sk.SketchCircles.AddByCenterRadius(c, radius * MM)
+            prof = sk.Profiles.AddForSolid()
+            path = feats.CreatePath(ln)
+            return feats.SweepFeatures.AddUsingPath(prof, path, getattr(K, op))
+    
+        made = []
+        for i, m in enumerate(ms):
+            # join into the part's body (verified live in Inventor 2027.1); the first member starts it
+            op = "kJoinOperation" if (i or s.snapshot().bodies) else "kNewBodyOperation"
+            try:
+                made.append(sweep(i, m["od"] / 2, op).Name)
+            except Exception as e:
+                raise InventorError(f"tube_frame: member {i + 1} ({m['name'] or m['a']}) failed: {e}") from e
+        for i, m in enumerate(ms):
+            if m["wall"] <= 0:
+                continue                                  # solid rod / disc
+            try:
+                made.append(sweep(i, m["od"] / 2 - m["wall"], "kCutOperation").Name)
+            except Exception as e:
+                raise InventorError(f"tube_frame: boring member {i + 1} failed: {e}") from e
+        safe(lambda: setattr(sk3, "Visible", False))
+        s.doc().Update()
+        out = s.delta(name, before)
+        cut = []
+        for i, m in enumerate(ms, 1):
+            L = math.dist(m["a"], m["b"])
+            cut.append({"member": i, "name": m["name"] or f"M{i}", "section": f"{m['od']:g}x{m['wall']:g} CHS" if m["wall"] > 0 else f"{m['od']:g} round bar",
+                        "length_mm": r(L, 1), "ends": m["ends"],
+                        "stock_mm": r(math.dist(*extended[i - 1]), 1)})
+        by_section = {}
+        for c in cut:
+            by_section[c["section"]] = r(by_section.get(c["section"], 0) + c["stock_mm"], 1)
+        out.update(features=made, members=len(ms), cut_list=cut, stock_by_section_mm=by_section,
+                   stock_length_convention="Untrimmed axial blank length of the constructed sweep, including corner run-ons. Tee blanks extend to the host centreline for coping. No saddle-depth deduction is applied.")
+        tx.End()
+        return out
+    except Exception:
+        tx.Abort()
+        raise

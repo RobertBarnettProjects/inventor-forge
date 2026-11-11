@@ -1,6 +1,6 @@
 # inventor-forge tools
 
-160 tools. Lengths mm, angles degrees, forces N, stresses MPa.
+168 tools. Lengths mm, angles degrees, forces N, stresses MPa.
 
 ## Session
 
@@ -14,6 +14,7 @@
 | `list_documents` | Every open (visible) document, with the active one marked. |  |
 | `transaction` | Group several operations into one undo step: begin, commit, or abort (rolls everything back). | `action`, `name` |
 | `undo` | Undo the last N operations in the active document. | `steps` |
+| `model_version` | A cheap fingerprint of the active document's geometry, for noticing edits made by hand in Inventor (it changes whenever the model's shape changes). |  |
 
 ## Documents
 
@@ -27,6 +28,7 @@
 | `close_document` | Close the active (or named) document. Unsaved changes are discarded unless save=true. | `save`, `name` |
 | `export_document` | Export a copy of the active document: STEP, IGES, STL, SAT, Parasolid (X_T), OBJ, JT, 3MF, PDF/DWG/DXF (drawings), PNG/JPG (picture of the view). Format comes from the extension if omitted. | `path`*, `format` |
 | `close_unused_documents` | Close documents Inventor holds in the background (no window, nothing referencing them) — e.g. parts loaded for a drawing that was closed. Frees their files for save_document. Never touches documents with a window. |  |
+| `referenced_files` | The active document's file and every file it depends on (parts of an assembly, the model of a drawing). |  |
 
 ## View
 
@@ -84,6 +86,8 @@
 | `thicken_face` | Thicken or offset faces by a distance (mm). operation join adds material, cut removes it. | `faces`*, `distance`*, `operation`, `direction` |
 | `face_draft` | Mould draft on faces by an angle (degrees) relative to a pull direction normal to a plane (fixed at that plane). | `faces`*, `angle`*, `pull_plane` |
 | `emboss_text` | Engrave (or emboss) text into a planar face. With face_index the text is centred on the face and (x, y) are offsets from that centre in mm; without it (x, y) are coordinates in the active sketch. height is the text height. | `text`*, `x`, `y`, `depth`, `engrave`, `height`, `face_index` |
+| `frame_members` | A welded box-section frame in one step, from member centre lines in the XY plane: every member becomes a width x height bar, all joined into one solid; wall > 0 then hollows it into tube of that wall thickness (do this before adding pads and brackets, which should stay solid). Returns a cut list: each member's centre-line length, its end angles (between the cut face and the member's axis: 90 = square cut, 45 = mitred corner) and the stock length to cut. | `members`*, `width`, `height`, `wall`, `z`, `name` |
+| `tube_frame` | A welded round-tube (CHS) frame in 3D, in one step: each member is a straight tube on a centre line [x1, y1, z1, x2, y2, z2] (mm). All members are swept solid and joined, then bored to the wall thickness, so joints are welded and tee'd tubes are coped into their neighbours. Ends that meet another member's end (corners) run on by half a diameter so the corner closes. Use real sizes (e.g. AS/NZS 1163 CHS 33.7x2.6, 26.9x2.3). Returns a cut list (length between node centres, end conditions) and the total tube length/mass basis. | `members`*, `od`, `wall`, `name` |
 | `parametric_extrusion` | A closed profile whose every corner is driven by parameter expressions, extruded to a parametric width. The sketch comes out fully constrained, so changing a parameter (or a linked master) reshapes the part reliably. | `plane`*, `vertices`*, `width`*, `name`, `operation`, `symmetric` |
 | `split_faces` | Split faces along sketch lines, without changing the solid: for example to load only a patch of a face in an analysis. The sketch doesn't have to be on the face. | `sketch`, `faces` |
 
@@ -98,6 +102,7 @@
 | `find_face` | Face nearest a point (centroid distance) and/or best aligned with an outward normal. | `x`, `y`, `z`, `normal`, `type`, `min_area` |
 | `mass_properties` | Mass, volume, area, centre of gravity and inertia (about the CoG-aligned global axes and principal) of the active part or assembly, using its assigned material(s). |  |
 | `measure` | Minimum distance (and angle between planar faces) for two faces, two edges, or a face and an edge. | `face_one`, `face_two`, `edge_one`, `edge_two` |
+| `face_at_point` | The face a point (mm) lies on — for references picked in a viewer. Unlike find_face (nearest face centre) this checks the surface itself, and says when the point is on an edge shared by two faces. | `x`*, `y`*, `z`*, `tolerance` |
 | `name_face` | Give a face a name that stays with it when indices change (the same names as Inventor's Assign Name). | `face`*, `name`* |
 | `find_named_face` | Current face index (for list_faces and the analysis tools) of a named face. | `name`* |
 | `list_named_faces` | Every named face of the part and its current index. |  |
@@ -129,6 +134,9 @@
 |---|---|---|
 | `list_materials` | Material names available in the active material library (filter is a case-insensitive substring). | `filter` |
 | `set_material` | Assign a material from the library by name (exact or unique partial match, e.g. "Steel, Mild", "Aluminum 6061"). Returns its mechanical properties. | `name`* |
+| `material_properties` | Young's modulus (MPa), Poisson's ratio, density (kg/m³), yield and ultimate strength (MPa) of the part's material. |  |
+| `create_material` | Make a named material in the active part from a library one, with your own strengths, and assign it — for grades the library lacks, e.g. name="AS/NZS 1163 C250L0", yield_MPa=250, ultimate_MPa=320. Stress Analysis uses these values, so the safety factor is against the right yield. | `name`*, `base`, `yield_MPa`, `ultimate_MPa`, `E_MPa`, `poisson`, `density_kg_m3` |
+| `set_appearance` | Give the active part a library appearance (colour/finish only; mass and stress use the material), by exact or partial name, e.g. "Rubber - Black", "Powder Coat - Red", "Chrome - Polished". | `name`* |
 
 ## Sheet Metal
 

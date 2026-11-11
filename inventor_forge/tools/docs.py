@@ -532,3 +532,29 @@ def close_unused_documents(s: Session) -> dict:
         if not changed:
             break
     return {"closed": closed, "open_documents": s.app.Documents.Count}
+
+
+@tool("session", mutates=False)
+def model_version(s: Session) -> dict:
+    """A cheap fingerprint of the active document's geometry, for noticing edits made by hand in Inventor (it changes
+    whenever the model's shape changes)."""
+    d = s.app.ActiveDocument
+    if d is None:
+        return {"document": None, "version": ""}
+    ver = safe(lambda: d.ModelGeometryVersion, "") or ""
+    if not ver:
+        cd = safe(lambda: d.ComponentDefinition)
+        rb = safe(lambda: cd.RangeBox)
+        ver = f"{safe(lambda: cd.Features.Count, 0)}:{safe(lambda: rb.MaxPoint.X, 0)}:{safe(lambda: rb.MaxPoint.Y, 0)}"
+    return {"document": safe(lambda: d.FullFileName, "") or safe(lambda: d.DisplayName, ""), "type": s.kind(d),
+            "version": str(ver), "dirty": bool(safe(lambda: d.Dirty, False))}
+
+
+@tool("documents", mutates=False)
+def referenced_files(s: Session) -> dict:
+    """The active document's file and every file it depends on (parts of an assembly, the model of a drawing)."""
+    d = s.doc()
+    files = [safe(lambda: d.FullFileName, "")]
+    for r_ in items(safe(lambda: d.AllReferencedDocuments) or []):
+        files.append(safe(lambda r_=r_: r_.FullFileName, ""))
+    return {"files": [f for f in dict.fromkeys(files) if f]}

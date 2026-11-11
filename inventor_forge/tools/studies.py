@@ -284,7 +284,11 @@ def _open_result(s: Session, pid: int, study: str, result: str) -> None:
     _run_command(s, "FeaActivateResultCmd")
     time.sleep(2.0)
     d.SelectSet.Clear()
-    _answer_results_prompt(pid)
+    if _answer_results_prompt(pid):
+        STALE.add(study)
+
+
+STALE: set[str] = set()          # studies whose results Inventor said were out of date when opened
 
 
 def _colour_bar(s: Session, pid: int) -> int:
@@ -325,8 +329,12 @@ def read_result_maximum(s: Session, study: str, result: str = "Von Mises Stress"
     result: as named in the study's Results folder, e.g. Von Mises Stress, Displacement, Safety Factor
     """
     t0 = time.time()
+    STALE.discard(study)
     v = _read_max(s, _pid(s), study, result)
-    return {"study": study, "result": result, "maximum": v, "seconds": r(time.time() - t0, 1)}
+    out = {"study": study, "result": result, "maximum": v, "seconds": r(time.time() - t0, 1)}
+    if study in STALE:
+        out["warning"] = "Inventor said this study's results are out of date (the model changed since it was solved); solve it again"
+    return out
 
 
 def _picture(s: Session, study: str, result: str, view: str) -> str:
@@ -658,7 +666,10 @@ def run_study_cases(s: Session, template: str, cases: list[dict], results_path: 
     reasons: list[str] = []
     for case in cases:
         name = case["name"]
-        if data["cases"].get(name, {}).get("status") == "done":
+        done = data["cases"].get(name, {})
+        if done.get("status") == "done":
+            if done.get("values", case.get("values")) != case.get("values") or done.get("template", template) != template:
+                raise InventorError(f"case {name!r} was already run with different values or template; give it a new name")
             skipped += 1
             continue
         while True:
@@ -703,7 +714,7 @@ def _run_case(s: Session, pid: int, template: str, case: dict, want: list[str], 
             new = new[-len(values):]             # a retried copy can leave a few unused numbers before the real block
             _write(s, {n: v for n, v in zip(new, values) if v is not None})
         secs, warnings = _simulate(s, pid, timeout=timeout, front=False) if not _activate(s, name) else (0.0, [])
-        row = {"status": "done", "solve_seconds": r(secs, 1), "warnings": warnings,
+        row = {"status": "done", "solve_seconds": r(secs, 1), "warnings": warnings, "values": values, "template": template,
                "results": {res: _read_max(s, pid, name, res) for res in want}}
         row["saved"] = _save(s)
         row["total_seconds"] = r(time.time() - t0, 1)

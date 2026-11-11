@@ -159,6 +159,11 @@ def _ray_first_hit_is(s: Session, face, origin, direction) -> bool | None:
 def face_ref(s: Session, ref):
     """A face to pick: an index (part) or "Component:1/5" = face 5 of that component (assembly; indices as in
     inspect_assembly(faces_of=...))."""
+    if isinstance(ref, dict) and "occurrence" not in ref:      # {"face": n, "at": [x, y, z] mm}: aim the pick there
+        f = s.face(int(ref["face"]))
+        if ref.get("at"):
+            _AIM[safe(lambda: f.TransientKey)] = [float(v) * 0.1 for v in ref["at"]]
+        return f
     if isinstance(ref, dict):
         ref = f"{ref.get('occurrence')}/{ref.get('face')}"
     if isinstance(ref, str) and "/" in ref:
@@ -175,9 +180,31 @@ def face_ref(s: Session, ref):
     return s.face(int(ref))
 
 
+_AIM: dict = {}          # face TransientKey -> preferred aim point (cm), from references that carry a point
+
+
+def _normal(face) -> list[float]:
+    """Outward normal at the face's aim point when one was given (curved faces: it differs across the face)."""
+    given = _AIM.get(safe(lambda: face.TransientKey))
+    if given:
+        try:
+            from ..com import typed_call as _tc
+            out = _tc(face.Evaluator, "GetNormalAtPoint", list(given), [0.0, 0.0, 0.0])
+            n = list(out[-1])
+            if len(n) == 3 and any(abs(v) > 1e-12 for v in n):
+                return n
+        except Exception:
+            pass
+    return face_normal(face)
+
+
 def _aim_point(s: Session, face, n) -> list[float]:
-    """A point well inside the face to aim at, in cm. PointOnFace can sit right on the boundary, so try the
-    middle of the face first and keep the first point a ray from outside really reaches on this face."""
+    """A point well inside the face to aim at, in cm. A point given with the face reference (e.g. where the user
+    clicked in a viewer) wins; otherwise PointOnFace can sit right on the boundary, so try the middle of the face
+    first and keep the first point a ray from outside really reaches on this face."""
+    given = _AIM.get(safe(lambda: face.TransientKey))
+    if given:
+        return given
     p = face.PointOnFace
     fallback = [p.X, p.Y, p.Z]
     if face.SurfaceType != K.kPlaneSurface:
@@ -191,7 +218,7 @@ def _aim_point(s: Session, face, n) -> list[float]:
 def _look_at_face(s: Session, face, at=None) -> None:
     """Point the camera straight at an interior point of the face from outside, zoomed in so the face
     fills the middle of the view and nothing else is under the centre pixel."""
-    n = face_normal(face)
+    n = _normal(face)
     x0, y0, z0 = [v * 0.1 for v in at] if at else _aim_point(s, face, n)
     dirs = [n]
     # if something blocks the straight view (a face at the bottom of a pocket), try tilted views
@@ -312,6 +339,7 @@ def _pick_face(s: Session, face, pid: int, dlg: int, attempts: int = 4) -> None:
     park = ((dl + dr) // 2, dt + 12)                 # the dialog's title bar
     label_before = _faces_label(dlg).lower()
     last = None
+    first = None                                     # the face as it looked before any click
     for attempt in range(attempts):
         _look_at_face(s, face)
         safe(lambda: s.app.ActiveView.Update())
@@ -325,8 +353,12 @@ def _pick_face(s: Session, face, pid: int, dlg: int, attempts: int = 4) -> None:
         win32api.SetCursorPos(park)
         time.sleep(0.3)
         before = _screen_samples(s)
-        if attempt and sum(_vivid(c) for c in before) >= 3:
-            return                                   # the previous click registered late
+        if first is None:
+            first = before
+        # the previous click registered late: the face now differs from how it looked before any click (comparing
+        # with the original view, not "is it vivid", so a red or orange part can't fake a selection)
+        if attempt and sum(1 for a, b in zip(first, before) if not _close(a, b, 45)) >= 3:
+            return
         hwnd = s.app.ActiveView.HWND
         left, top, right, bottom = win32gui.GetClientRect(hwnd)
         cx, cy = win32gui.ClientToScreen(hwnd, ((right - left) // 2, (bottom - top) // 2))
@@ -358,7 +390,7 @@ def _cross(a, b):
 
 def _common_view(s: Session, faces) -> tuple | None:
     """A direction from which every face is the first thing seen at its aim point, or None."""
-    data = [(face_normal(f), f) for f in faces]
+    data = [(_normal(f), f) for f in faces]
     pts = [(_aim_point(s, f, n), n, f) for n, f in data]
     cands = [_norm([sum(n[i] for n, _ in data) for i in range(3)])] + [n for n, _ in data]
     cands += [_norm([a, b, 1]) for a in (1, -1) for b in (1, -1)] + [_norm([a, b, -1]) for a in (1, -1) for b in (1, -1)]
@@ -455,8 +487,10 @@ def _pick_faces(s: Session, faces: list, pid: int, dlg: int) -> None:
             missed.append(f)
             continue
         ok = False
+        first = None
         for _attempt in range(3):
             before = _pixels([xy])
+            first = first or before
             _click_screen(xy[0], xy[1], pid, "a face in the viewport")
             win32api.SetCursorPos(park)
             time.sleep(0.7)
@@ -464,7 +498,8 @@ def _pick_faces(s: Session, faces: list, pid: int, dlg: int) -> None:
             if sum(1 for a, b in zip(before, after) if not _close(a, b, 45)) >= 3:
                 ok = True
                 break
-            if sum(_vivid(c) for c in after) >= 3:      # it was already selected (a late click): leave it
+            # an earlier click registered late: it differs from the original view (not "is it vivid": red parts)
+            if sum(1 for a, b in zip(first, after) if not _close(a, b, 45)) >= 3:
                 ok = True
                 break
         if not ok:
@@ -931,6 +966,16 @@ def _num(text: str) -> float | None:
     return float(m.group(1)) if m else None
 
 
+def _parse_own(path: str, study_name: str) -> dict:
+    """The study this call created: by its name when it was given one, else the newest in the report."""
+    if study_name:
+        try:
+            return parse_report(path, study_name)
+        except InventorError:
+            pass
+    return parse_report(path)
+
+
 def parse_report(path: str, study: str = "") -> dict:
     """Parse one study of an Inventor stress report (the report lists every study in the document;
     by default the last one, i.e. the study just run)."""
@@ -1132,7 +1177,7 @@ def analyze_stress(s: Session, fixed_faces: list | None = None, loads: list[dict
         if ld.get("force"):
             vec = [float(v) for v in ld["force"]]
             _force(s, pid, faces, vec)
-            applied = [applied[i] + vec[i] for i in range(3)]
+            applied = [applied[i] + vec[i] for i in range(3)] if applied is not None else None
         elif ld.get("bearing"):
             vec = [float(v) for v in ld["bearing"]]
             _vector_load(s, pid, "FeaCreateLoadBearingCmd", "Bearing Load", faces, vec, "N")
@@ -1162,8 +1207,27 @@ def analyze_stress(s: Session, fixed_faces: list | None = None, loads: list[dict
         if applied is not None:
             applied[2] -= w
     solve_s, solver_warnings = _simulate(s, pid)
-    report = _report(s, pid, tag)
-    res = parse_report(report)
+    report_error = None
+    try:
+        report = _report(s, pid, tag)
+        res = _parse_own(report, study_name)
+    except InventorError as e:              # the study is solved: read the peaks directly rather than lose it
+        report_error, report = str(e), ""
+        for w, _cls, title in U.window_rows(pid):
+            if _cls == "#32770" and title in ("Report", "Stress Analysis Report"):
+                safe(lambda w=w: U.click(U.find(w, cid=2)))       # Cancel a half-open report dialog
+        from .studies import _read_max
+        from .inspect import material_data
+        sm = {}
+        for key in ("Von Mises Stress", "Displacement", "Safety Factor"):
+            try:
+                v = _read_max(s, pid, study_name, key)
+                sm[key] = {"max": v, "min": v if key == "Safety Factor" else None}
+            except Exception:
+                pass
+        md = safe(lambda: material_data(s), {}) or {}
+        res = {"summary": sm, "reactions": [], "loads": [], "study": study_name, "mesh_avg_size_fraction": None,
+               "material": {"name": md.get("name", ""), "yield_MPa": str(md.get("yield_MPa") or "")}}
     sm = res["summary"]
 
     def mx(key, field="max"):
@@ -1177,6 +1241,9 @@ def analyze_stress(s: Session, fixed_faces: list | None = None, loads: list[dict
            "safety_factor_min": mx("Safety Factor", "min"),
            "reactions": res["reactions"], "loads_echo": res["loads"], "material": res["material"],
            "report": report, "solve_seconds": r(solve_s, 1), "total_seconds": r(time.time() - t0, 1)}
+    if report_error:
+        out["report_error"] = (f"Inventor's report did not open ({report_error}); peaks were read from the results "
+                               "directly, so there are no reactions and equilibrium is unverified")
     if solver_warnings:
         out["solver_warnings"] = solver_warnings
     if contact_rows:
@@ -1253,7 +1320,7 @@ def analyze_modes(s: Session, fixed_faces: list, modes: int = 6, name: str = "",
     _support(s, pid, fixed)
     solve_s, _ = _simulate(s, pid)
     report = _report(s, pid, tag)
-    res = parse_report(report)
+    res = _parse_own(report, study_name)
     freqs = res.get("frequencies_Hz", [])
     return {"engine": "Autodesk Inventor Stress Analysis", "study": res.get("study") or "Modal Analysis",
             "frequencies_Hz": freqs[:int(modes)] if len(freqs) >= int(modes) else freqs,

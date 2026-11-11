@@ -254,10 +254,18 @@ def _leading_number(text: str) -> float | None:
     return float(m.group(1)) if m else None
 
 
+def _unit(text: str) -> str:
+    m = re.match(r"\s*-?[\d.,eE+-]+\s*(.*)$", str(text))
+    return (m.group(1) if m else "").strip().lower()
+
+
 def same_value(shown: str, wanted: str) -> bool:
     """Does what a value box shows match what was entered? Inventor reformats numbers (2 -> 2.000 MPa)."""
     a, b = _leading_number(shown), _leading_number(wanted)
     if a is not None and b is not None:
+        ua, ub = _unit(shown), _unit(wanted)
+        if ua and ub and ua.replace(" ", "") != ub.replace(" ", ""):      # 2 psi is not 2 MPa
+            return False
         return abs(a - b) <= 1e-3 * max(abs(b), 1e-6) + 1e-9
     return str(shown).strip().lower() == str(wanted).strip().lower()
 

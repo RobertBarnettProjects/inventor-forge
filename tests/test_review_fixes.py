@@ -133,3 +133,30 @@ def test_standards_resolve_and_follow_the_session():
     assert len(TOOLS["list_standards"].fn(s)["standards"]) == len(STANDARDS)
     with pytest.raises(InventorError):
         TOOLS["set_standard"].fn(s, "ISO", drawing_units="in")
+
+
+def test_copy_between_existing_parameters_is_refused():
+    # A=[0, 1000, 0], B=[0, 500, 0]; the copy of A lands between them: values can't say whose is whose
+    before = sa("0 N", "1000 N", "0 N", "0 N", "500 N", "0 N")
+    after = sa("0 N", "1000 N", "0 N", "0 N", "1000 N", "0 N", "0 N", "500 N", "0 N")
+    with pytest.raises(InventorError, match="told apart"):
+        studies._inserted(before, after)
+
+
+def test_near_equal_values_are_not_the_same_parameter():
+    before = sa("100 N", "100.05 N")
+    after = sa("100 N", "100 N", "100.05 N")
+    with pytest.raises(InventorError):
+        studies._inserted(before, after)
+
+
+def test_names_that_become_file_names_are_plain():
+    from inventor_forge.com import plain_name
+    assert plain_name(r"C:\Users\Public\x") == "x"
+    assert plain_name(r"..\..\x") == "x" and plain_name("a/b/../c") == "c" and plain_name("") == "untitled"
+
+
+def test_standard_labels_are_accepted():
+    from inventor_forge.standards import key
+    assert key("ASME Y14.5") == "ASME" and key("JIS B 0001") == "JIS" and key("DIN EN ISO 128") == "DIN"
+    assert key("ISO 128") == "ISO" and key("AS 1100.101") == "AS1100"

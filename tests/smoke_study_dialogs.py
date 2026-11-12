@@ -73,6 +73,9 @@ try:
         shown = [U.get_text(U.find(h, cid=c)) for c in (1216, 1215, 1220)]
         print("force boxes:", shown)
         expect("force values", all(U.same_value(a, b) for a, b in zip(shown, ("12.5", "-30", "400"))), shown)
+        # Inventor reformats a value it has parsed ("-30.000 N"); one shown exactly as typed may not be committed
+        expect("force values committed (reformatted by Inventor)",
+               all(x.strip() != v for x, v in zip(shown, ("12.5", "-30", "400"))), shown)
         U.close(h)
         U.wait_gone(h, 10)
 
@@ -101,7 +104,8 @@ try:
     r = F.safe_call("status", {})
     expect("calls refused while the Simulate window is open", not r["ok"] and "solve" in r["error"], r.get("error", ""))
     r = F.safe_call("solve_state", {})
-    expect("solve_state still answers", r["ok"] and r["inventors"][0]["solving"] == ["Simulate"], r)
+    mine = next((x for x in r.get("inventors", []) if x["process"] == r.get("this_session")), {})   # not the user's
+    expect("solve_state still answers", r["ok"] and mine.get("solving") == ["Simulate"], r)
     U.close(h)
     U.wait_gone(h, 10)
     time.sleep(1)

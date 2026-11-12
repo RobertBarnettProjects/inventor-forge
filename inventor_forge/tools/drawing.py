@@ -10,7 +10,7 @@ import os
 import re
 import time
 
-from ..com import MM, InventorError, K, items, r, safe
+from ..com import MM, InventorError, K, items, late, r, safe
 from ..registry import tool
 from ..session import Session
 from .inspect import face_normal
@@ -353,13 +353,12 @@ def drawing_curves(v, entity=None):
     """DrawingView.DrawingCurves is an indexed property with an optional argument, which late
     binding can't call; invoke it with explicit types."""
     import pythoncom
-    import win32com.client.dynamic as dyn
     o = v._oleobj_
     memid = o.GetIDsOfNames("DrawingCurves")
     arg = entity._oleobj_ if entity is not None else pythoncom.Missing
     res = o.InvokeTypes(memid, 0, pythoncom.DISPATCH_PROPERTYGET, (pythoncom.VT_DISPATCH, 0),
                         ((pythoncom.VT_VARIANT, 17),), arg)
-    return dyn.Dispatch(res)
+    return late(res)
 
 
 def _curves(v, entity=None) -> list:
@@ -1769,7 +1768,7 @@ def render_sheet(s: Session, path: str = "", width: int = 2400) -> dict:
         path = os.path.join(s.workdir, "renders", path)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     d.Activate()
-    v = s.app.ActiveView
+    v = s.view()
     safe(lambda: v.Fit())
     h = int(width * sh.Height / sh.Width)
     v.SaveAsBitmap(path, int(width), h)

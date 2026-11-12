@@ -555,7 +555,6 @@ def add_parts_list(s: Session, view: str = "", x: float = 0.0, y: float = 0.0) -
             "size_mm": [r(width, 1), r(height, 1)]}
 
 
-@tool("drawing")
 def _ballooned_items(sh) -> set:
     out = set()
     for bl in items(sh.Balloons):
@@ -564,6 +563,7 @@ def _ballooned_items(sh) -> set:
     return out
 
 
+@tool("drawing")
 def auto_balloon(s: Session, view: str = "") -> dict:
     """Balloon every component visible in an assembly view, placed outside the view and linked to
     the parts list numbering. Items that already have a balloon on the sheet (from another view) are skipped,

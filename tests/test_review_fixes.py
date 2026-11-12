@@ -85,8 +85,10 @@ def test_tools_without_a_timeout_keep_the_default():
 # --------------------------------------------------------------------------- item 3: early binding
 @pytest.mark.skipif(sys.platform != "win32", reason="COM")
 def test_method_results_stay_late_bound_with_a_gen_py_cache():
+    import pythoncom
     import win32com.client.dynamic as dyn
     from win32com.client import gencache
+    pythoncom.CoInitialize()                 # another test's apartment may have left this thread uninitialised
 
     from inventor_forge.com import _late_class, late
     gencache.EnsureModule("{420B2830-E718-11CF-893D-00A0C9054228}", 0, 1, 0)   # Scripting, cached like Inventor was
@@ -113,3 +115,21 @@ def test_mouse_ready_answers_with_a_reason():
 def test_degenerate_element_is_treated_as_a_failed_solve():
     fea = sys.modules["inventor_forge.tools.fea"]
     assert any(k in "Degenerate element found (S020)".lower() for k in fea.FATAL_SOLVE)
+
+
+# --------------------------------------------------------------------------- standards chosen per session
+def test_standards_resolve_and_follow_the_session():
+    from inventor_forge.session import Session
+    from inventor_forge.standards import STANDARDS, StandardError, key, third_angle
+    assert key("AS 1100") == "AS1100" and key("ansi") == "ASME" and key("bs 8888") == "BS8888"
+    assert third_angle("ASME") and third_angle("JIS") and not third_angle("ISO") and not third_angle("DIN")
+    with pytest.raises(StandardError):
+        key("klingon")
+    s = Session()
+    assert s.standard_key() == "AS1100"
+    TOOLS["set_standard"].fn(s, "DIN")
+    assert s.standard_key() == "DIN" and s.standard_key("ASME") == "ASME"
+    assert TOOLS["get_standard"].fn(s)["projection"] == "first-angle"
+    assert len(TOOLS["list_standards"].fn(s)["standards"]) == len(STANDARDS)
+    with pytest.raises(InventorError):
+        TOOLS["set_standard"].fn(s, "ISO", drawing_units="in")

@@ -32,7 +32,9 @@ INSTRUCTIONS = (
     "set_analysis_parameters, solve_study, read_result_maximum and run_study_cases need no mouse: build a template, then sweep it. "
     "Don't call Inventor during a solve; solve_state is safe. connect(private=true) gives this session its own Inventor when the "
     "user has theirs open. "
-    "Standards default to AS 1100 (third angle) / ISO metric threads. execute_python is the escape hatch."
+    "Standards: at the start of a chat call get_standard; if the user hasn't chosen one, ask them once which to work "
+    "to (list_standards: AS 1100, ISO, ASME, DIN, BS 8888, JIS, GB), then set_standard. It holds for the rest of the "
+    "session: drawings, fastener and material choices follow it. execute_python is the escape hatch."
 )
 
 

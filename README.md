@@ -1,7 +1,7 @@
 # inventor-forge
 
 **Autodesk Inventor for AI agents** — an MCP server (and Python library) with 160 tools: parametric
-parts, sheet metal, assemblies, AS 1100 / ISO drawings with automatic QA, materials and mass
+parts, sheet metal, assemblies, drawings to AS 1100, ISO, ASME, DIN, BS 8888, JIS or GB with automatic QA, materials and mass
 properties — all through Inventor's COM API — and stress / modal analysis in Inventor's own Stress
 Analysis environment, which has no API and is therefore driven with the mouse and keyboard (below).
 
@@ -93,7 +93,9 @@ Full reference with arguments: [TOOLS.md](TOOLS.md).
   for cylinders — flush, angle, insert, tangent; faces/edges by part index or origin planes/axes),
   ground / move component, circular and linear component patterns, inspect_assembly (components, constraint health, per-component face tables),
   check_interference (pairs + overlap volume), bill_of_materials (+ CSV).
-- **Drawings** — create_drawing (AS 1100 third-angle with decimal points, or ISO first-angle), sheets,
+- **Standards** — list_standards, set_standard, get_standard: the agent asks once per session which standard to
+  work to (AS 1100, ISO, ASME, DIN, BS 8888, JIS, GB); drawings use its template, projection angle and dimension style.
+- **Drawings** — create_drawing (to the session's standard: AS 1100 / ASME / JIS third-angle, ISO / DIN / BS 8888 / GB first-angle), sheets,
   base / projected / section / detail views, move / rescale views, linear and diameter dimensions,
   auto_dimension_view (retrieve model dimensions), tolerances and fits, surface finish, centre marks, hole notes,
   hole tables, revision tables, general notes, parts list, auto_balloon, title block fields, view labels, **make_part_sheet / make_assembly_sheet** (one-shot

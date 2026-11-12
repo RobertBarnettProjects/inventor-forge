@@ -7,6 +7,7 @@ from concurrent.futures import TimeoutError as FutureTimeout
 import traceback
 from typing import Any
 
+from .standards import StandardError
 from .com import Apartment, InventorError, com_error_text
 from .registry import TOOLS, load_all
 from .session import Session
@@ -97,6 +98,8 @@ class Forge:
                 out = attempt()
             except InventorError:
                 raise
+            except StandardError as e:
+                raise InventorError(str(e)) from None
             except TypeError as e:
                 if "argument" in str(e):
                     raise InventorError(f"{name}: {e}") from e

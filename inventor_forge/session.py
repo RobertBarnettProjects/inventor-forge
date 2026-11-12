@@ -33,6 +33,13 @@ class Session:
         self.pid: int | None = None            # Inventor's process id, once connected
         self.private = False                   # True when this session started its own Inventor process
         self.workdir = os.path.join(os.path.expanduser("~"), "Documents", "inventor-forge")
+        self.standard: str | None = None       # chosen by the user for this session (set_standard); None = not asked yet
+        self.drawing_units = "mm"
+
+    def standard_key(self, standard: str = "") -> str:
+        """The standard a call should follow: the one it names, else the session's choice, else AS 1100."""
+        from .standards import DEFAULT, key
+        return key(standard) if standard else (self.standard or DEFAULT)
 
     # ------------------------------------------------------------------ connection
     @property
@@ -107,6 +114,7 @@ class Session:
         year = str(safe(lambda: self.app.SoftwareVersion.DisplayVersion, ""))[:4]
         root = r"C:\Users\Public\Documents\Autodesk"
         found = glob.glob(os.path.join(root, f"Inventor {year}", "Templates", "*", "Metric", filename))
+        found += glob.glob(os.path.join(root, f"Inventor {year}", "Templates", "*", "English", filename))
         found.sort(key=lambda p: 0 if os.sep + "en-US" + os.sep in p else 1)
         return found[0] if found else ""
 

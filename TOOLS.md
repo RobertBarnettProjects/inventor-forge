@@ -1,6 +1,6 @@
 # inventor-forge tools
 
-168 tools. Lengths mm, angles degrees, forces N, stresses MPa.
+171 tools. Lengths mm, angles degrees, forces N, stresses MPa.
 
 ## Session
 
@@ -168,7 +168,7 @@
 
 | Tool | What it does | Arguments |
 |---|---|---|
-| `create_drawing` | New drawing document (ISO template; AS1100 = third-angle projection, ISO = first-angle). | `standard`, `sheet_size`, `orientation`, `name` |
+| `create_drawing` | New drawing document to a drafting standard: the template, projection angle and dimension style follow it. | `standard`, `sheet_size`, `orientation`, `name` |
 | `add_sheet` | Add a sheet to the drawing (with the template's border and title block) and make it active. | `sheet_size`, `orientation`, `name` |
 | `activate_sheet` | Activate a sheet by name or 1-based index. | `sheet`* |
 | `add_base_view` | Base view of a part/assembly (file path or open document name) centred at (x, y) sheet mm. | `model`, `x`, `y`, `scale`, `orientation`, `style`, `name` |
@@ -234,6 +234,9 @@
 
 | Tool | What it does | Arguments |
 |---|---|---|
+| `list_standards` | The drafting/engineering standards this server can work to, with what each one sets (projection, drawing standard, general tolerance, threads, fasteners, materials, sheet sizes). Show these to the user to choose from. |  |
+| `set_standard` | Set the standard for the rest of this session (ask the user first; list_standards has the options). Drawings use its template, projection angle and dimension style; standard parts and materials follow its series. | `standard`*, `drawing_units` |
+| `get_standard` | The standard chosen for this session, or chosen=false if the user hasn't been asked yet. |  |
 | `execute_python` | Run Python in a persistent namespace with the live Inventor objects: app, doc, cdef (component definition or None), tg (TransientGeometry), to (TransientObjects), K (all Inventor enum constants), items(collection), typed_call(obj, method, ...) for [out]-parameter methods, MM (=0.1, mm->cm). Inventor API units are cm and radians. The value of a final expression is returned; print() output too. Use it for anything the dedicated tools don't cover. | `code`* |
 | `reload_api` | Reload the tool modules from disk (after editing them) without restarting the server. |  |
 | `list_tools` | Tool names by group (session, documents, sketch, features, inspect, parameters, materials, properties, sheet_metal, assembly, drawing, analysis, view, system). | `group` |

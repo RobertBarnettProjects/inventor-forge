@@ -39,6 +39,13 @@ INSTRUCTIONS = (
 )
 
 
+def _file_meta(name: str) -> dict:
+    """Which arguments name files this tool writes or reads (for clients that sandbox writes)."""
+    from .fileargs import NAMES, READS, WRITES
+    meta = {k: list(v[name]) for k, v in (("writes", WRITES), ("reads", READS), ("names", NAMES)) if name in v}
+    return {"_meta": {"inventor-forge/files": meta}} if meta else {}
+
+
 class Server:
     def __init__(self, visible: bool = True):
         self.forge = Forge(visible=visible)
@@ -50,7 +57,8 @@ class Server:
                 continue
             out.append({"name": t.name, "description": t.description, "inputSchema": t.schema,
                         "annotations": {"readOnlyHint": not t.mutates,
-                                        "destructiveHint": t.name in DESTRUCTIVE}})
+                                        "destructiveHint": t.name in DESTRUCTIVE},
+                        **_file_meta(t.name)})
         return out
 
     def tools_call(self, name: str, args: dict) -> dict:

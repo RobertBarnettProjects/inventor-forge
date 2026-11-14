@@ -224,3 +224,44 @@ def test_call_held_by_a_dialog_comes_back_early(monkeypatch):
     p = TOOLS["pending_call"].fn(f.session, wait_seconds=5)
     assert p["finished"] and p["result"] == {"done": True} and f.pending is None
     f.apartment.close()
+
+
+def test_library_and_install_folders_are_protected(tmp_path, monkeypatch):
+    docs = sys.modules["inventor_forge.tools.docs"]
+    with pytest.raises(InventorError, match="Autodesk"):
+        docs._guard_write(r"C:\Users\Public\Documents\Autodesk\Inventor 2027\Templates\en-US\Metric\Standard.ipt")
+    with pytest.raises(InventorError, match="Autodesk"):
+        docs._guard_write(os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Autodesk", "x.ipt"))
+    mine = tmp_path / "keep"
+    mine.mkdir()
+    monkeypatch.setenv("INVENTOR_FORGE_PROTECTED", str(mine))
+    with pytest.raises(InventorError, match="INVENTOR_FORGE_PROTECTED"):
+        docs._guard_write(str(mine / "a.ipt"))
+    ro = tmp_path / "ro.ipt"
+    ro.write_text("x")
+    os.chmod(ro, 0o444)
+    with pytest.raises(InventorError, match="read-only"):
+        docs._guard_write(str(ro))
+    docs._guard_write(str(tmp_path / "fine.ipt"))
+
+
+def test_case_failures_are_told_apart_from_inventor_failures():
+    st = sys.modules["inventor_forge.tools.studies"]
+    assert st._case_level(InventorError("solve failed: degenerate element found"))
+    assert not st._case_level(InventorError("The RPC server is unavailable"))
+    assert not st._case_level(RuntimeError("boom"))
+
+
+def test_file_arguments_are_declared_and_exist():
+    from inventor_forge.fileargs import NAMES, READS, WRITES
+    for table in (WRITES, READS, NAMES):
+        for tool_name, keys in table.items():
+            assert tool_name in TOOLS, tool_name
+            for k in keys:
+                assert k in TOOLS[tool_name].schema["properties"], (tool_name, k)
+    import re
+    # every argument whose name says file/path is declared one way or the other
+    for n, t in TOOLS.items():
+        for k in t.schema["properties"]:
+            if re.search(r"(^|_)(path|file|folder|dir)$", k):
+                assert k in WRITES.get(n, ()) + READS.get(n, ()), (n, k)

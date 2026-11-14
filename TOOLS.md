@@ -1,6 +1,6 @@
 # inventor-forge tools
 
-174 tools. Lengths mm, angles degrees, forces N, stresses MPa.
+175 tools. Lengths mm, angles degrees, forces N, stresses MPa.
 
 ## Session
 
@@ -163,6 +163,7 @@
 | `component_gap` | Smallest distance between two components, in mm (0 when they touch or overlap). | `occurrence_one`*, `occurrence_two`* |
 | `bill_of_materials` | Parts-only BOM: item, quantity, part number, description, material, mass; optional CSV export. | `csv_path` |
 | `pattern_component` | Circular (angle = degrees between copies) or linear (linear=true, spacing in mm) pattern of components along an assembly origin axis X/Y/Z. | `occurrences`*, `axis`, `count`, `angle`, `linear`, `spacing` |
+| `sweep_clearance` | Drive an angle or offset constraint through a range and, at every step, check for clashes and the smallest gap between the moving component and the rest: hinges, levers, steering, sliders. The constraint is put back to where it was afterwards. Gives the first value where parts collide and the tightest clearance. | `constraint`*, `start`*, `stop`*, `steps`, `moving`, `against` |
 | `set_component_model_state` | Show a component in the assembly in one of its model states. | `occurrence`*, `state`* |
 
 ## Drawing

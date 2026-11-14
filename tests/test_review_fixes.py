@@ -265,3 +265,12 @@ def test_file_arguments_are_declared_and_exist():
         for k in t.schema["properties"]:
             if re.search(r"(^|_)(path|file|folder|dir)$", k):
                 assert k in WRITES.get(n, ()) + READS.get(n, ()), (n, k)
+
+
+def test_rejected_operations_come_with_a_next_step():
+    from inventor_forge.hints import hint_for
+    assert "list_edges" in hint_for("fillet", "Exception occurred")
+    assert "check_sketch" in hint_for("extrude", "no closed profile")
+    assert "direction" in hint_for("extrude", "Exception occurred")
+    assert "pending_call" in hint_for("create_part", "call was rejected by callee (busy)")
+    assert hint_for("list_faces", "Exception occurred") == ""

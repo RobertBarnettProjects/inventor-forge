@@ -197,6 +197,7 @@ def test_call_held_by_a_dialog_comes_back_early(monkeypatch):
     release = threading.Event()
     f = E.Forge.__new__(E.Forge)
     f.tools, f.pending, f.apartment = TOOLS, None, Apartment("test-sta")
+    f._pending_lock = threading.Lock()
     f.session = type("S", (), {"pid": 4242, "solver_busy": lambda self: [], "forge": None})()
     f.session.forge = f
     dialog = [{"hwnd": 7, "title": "Inventor", "text": "Sketch not closed", "buttons": ["OK"]}]
@@ -218,6 +219,8 @@ def test_call_held_by_a_dialog_comes_back_early(monkeypatch):
         f.call("status")
     p = TOOLS["pending_call"].fn(f.session)
     assert p["pending"] and p["dialogs"][0]["text"] == "Sketch not closed"
+    with pytest.raises(InventorError, match="no tool call is waiting"):     # bound to the held call: the user's own
+        TOOLS["answer_dialog"].fn(type("S", (), {"pid": 1, "forge": None})(), button="OK")
     with pytest.raises(InventorError, match="still waiting"):
         f.call("status")
     release.set()
@@ -274,3 +277,30 @@ def test_rejected_operations_come_with_a_next_step():
     assert "direction" in hint_for("extrude", "Exception occurred")
     assert "pending_call" in hint_for("create_part", "call was rejected by callee (busy)")
     assert hint_for("list_faces", "Exception occurred") == ""
+
+
+def test_every_declared_write_goes_through_the_gate():
+    import inspect
+    from inventor_forge.fileargs import WRITES
+    for name in WRITES:
+        src = inspect.getsource(TOOLS[name].fn)
+        assert "output_path(" in src or "_guard_write(" in src or "save_document(" in src, name
+
+
+def test_read_only_mode_blocks_writes_even_from_reading_tools(monkeypatch, tmp_path):
+    from inventor_forge.writes import output_path
+    monkeypatch.setenv("INVENTOR_FORGE_READ_ONLY", "1")
+    with pytest.raises(InventorError, match="read-only"):
+        output_path(str(tmp_path), "bom.csv", "exports", ".csv")
+
+
+def test_protected_folder_list_tolerates_spaces(monkeypatch, tmp_path):
+    from inventor_forge.writes import guard
+    monkeypatch.setenv("INVENTOR_FORGE_PROTECTED", f"  {tmp_path}  ;")
+    with pytest.raises(InventorError):
+        guard(str(tmp_path / "x.ipt"))
+
+
+def test_unlimited_wait_is_allowed():
+    from inventor_forge.engine import call_budget
+    assert call_budget(TOOLS["status"].fn, {}, None) is None

@@ -23,3 +23,14 @@ out = os.path.join(os.path.dirname(__file__), "..", "TOOLS.md")
 with open(out, "w", encoding="utf-8") as f:
     f.write("\n".join(lines) + "\n")
 print("wrote", os.path.abspath(out), len(tools), "tools")
+
+# keep fileargs.KNOWN in step with the registry
+fa = os.path.join(os.path.dirname(__file__), "..", "inventor_forge", "fileargs.py")
+with open(fa, encoding="utf-8") as f:
+    src = f.read()
+head, _, _ = src.partition("KNOWN: frozenset = ")
+names = sorted(tools)
+body = "frozenset({\n" + "".join(f"    {n!r},\n" for n in names) + "})\n"
+with open(fa, "w", encoding="utf-8") as f:
+    f.write(head + "KNOWN: frozenset = " + body)
+print("updated fileargs.KNOWN:", len(names))

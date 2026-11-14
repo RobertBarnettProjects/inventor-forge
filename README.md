@@ -178,3 +178,15 @@ the mouse):
 
 MIT — see [LICENSE](LICENSE). Autodesk and Inventor are trademarks of Autodesk, Inc.; this project is
 not affiliated with or endorsed by Autodesk.
+
+## Switches (environment variables)
+
+| Variable | Effect |
+|---|---|
+| `INVENTOR_FORGE_READ_ONLY=1` | Refuse every tool that changes a model, and every file write (exports, CSV, screenshots). |
+| `INVENTOR_FORGE_TOOLSETS=sketch,features,drawing` | Offer only these tool groups (system and session tools stay). |
+| `INVENTOR_FORGE_PROTECTED=C:ault;D:eleased` | Never save or export into these folders (Autodesk's library, template and install folders are always protected). |
+| `INVENTOR_FORGE_DEBUG=1` | Extra diagnostics on stderr. |
+
+Each tool's `_meta["inventor-forge/files"]` in `tools/list` says which arguments it writes or reads, for clients
+that sandbox file access.

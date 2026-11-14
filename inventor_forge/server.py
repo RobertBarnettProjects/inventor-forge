@@ -65,11 +65,13 @@ class Server:
         try:
             res = self.forge.call(name, args)
             content = [{"type": "text", "text": json.dumps(res, ensure_ascii=False, default=str)}]
-            if name in IMAGE_TOOLS and res.get("path", "").lower().endswith(".png") and os.path.exists(res["path"]):
-                if os.path.getsize(res["path"]) < 4_000_000:
-                    with open(res["path"], "rb") as f:
-                        content.append({"type": "image", "mimeType": "image/png",
-                                        "data": base64.b64encode(f.read()).decode()})
+            if name in IMAGE_TOOLS:
+                paths = [res.get("path", "")] + [i.get("path", "") for i in res.get("images") or []]
+                for pth in [x for x in paths if x and x.lower().endswith(".png") and os.path.exists(x)][:6]:
+                    if os.path.getsize(pth) < 4_000_000:
+                        with open(pth, "rb") as f:
+                            content.append({"type": "image", "mimeType": "image/png",
+                                            "data": base64.b64encode(f.read()).decode()})
             return {"content": content, "isError": False}
         except InventorError as e:
             return {"content": [{"type": "text", "text": f"Error: {e}"}], "isError": True}

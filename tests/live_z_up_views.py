@@ -47,6 +47,15 @@ try:
     # image aspect tells them apart through mm_per_px (larger for top, which shows more)
     expect("top and front differ in scale", top.get("mm_per_px") and front.get("mm_per_px")
            and top["mm_per_px"] != front["mm_per_px"], f"{top.get('mm_per_px')} {front.get('mm_per_px')}")
+    # an unconsumed sketch stays visible in the model; clean pictures leave it out and put visibility back
+    call("create_sketch", plane="XY", offset=30)
+    call("draw_circle", diameter=40)
+    a = call("screenshot", path=os.path.join(OUT, "clean.png"), view="iso", up="z")
+    b = call("screenshot", path=os.path.join(OUT, "raw.png"), view="iso", up="z", clean=False)
+    same = open(a["path"], "rb").read() == open(b["path"], "rb").read() if a.get("path") and b.get("path") else True
+    expect("clean picture leaves the sketch out", not same)
+    v = call("execute_python", code="print(bool(doc.ObjectVisibility.Sketches))")
+    expect("sketch visibility put back", v.get("stdout", "").strip() == "True", str(v)[:120])
     r = call("screenshot", path=os.path.join(OUT, "bad.png"), view="home", up="z")
     expect("unknown Z-up view refused", "error" in r and "up='z'" in r["error"])
     print("images in", OUT)

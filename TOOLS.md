@@ -1,6 +1,6 @@
 # inventor-forge tools
 
-175 tools. Lengths mm, angles degrees, forces N, stresses MPa.
+177 tools. Lengths mm, angles degrees, forces N, stresses MPa.
 
 ## Session
 
@@ -63,6 +63,7 @@
 
 | Tool | What it does | Arguments |
 |---|---|---|
+| `repair_import` | Check an imported part (STEP, IGES...): how many bodies are solid and how many are open surfaces (no volume, so no mass and no booleans), and the smallest faces (slivers). With fix, knit the surfaces into one body and report whether it closed into a solid. | `fix`, `tolerance` |
 | `extrude` | Extrude the active sketch's closed profile(s) — all closed regions, inner loops become holes. | `distance`, `operation`, `direction`, `through_all`, `taper`, `sketch_index` |
 | `revolve` | Revolve the active sketch's profile about an axis. | `axis`, `angle`, `operation`, `sketch_index` |
 | `hole` | Drilled, tapped, counterbored or countersunk hole(s), placed by model coordinates. | `x`, `y`, `diameter`, `depth`, `points`, `face_index`, `axis`, `tap`, `tap_class`, `cbore_diameter`, `cbore_depth`, `csink_diameter`, `csink_angle`, `use_sketch_points` |
@@ -236,6 +237,7 @@
 
 | Tool | What it does | Arguments |
 |---|---|---|
+| `api_lookup` | Look up Inventor's API in its own type library (offline, version-exact): objects, their methods and properties with argument names and types ([out] marks arguments to pass to typed_call), and enums. For writing execute_python code. Distances in the API are cm, angles radians. | `query`*, `object`, `limit` |
 | `pending_call` | The call that came back early because Inventor showed a dialog (or took too long): whether it has finished now, its result or error, and any dialog Inventor still shows. Reads windows only, so it works while Inventor is blocked. | `wait_seconds` |
 | `answer_dialog` | Press a button on an Inventor dialog that is holding up a call (pending_call lists them), with a window message, not the mouse. Only use a button the user would agree to: ask them when it matters (e.g. "Save"). | `button`*, `title` |
 | `list_standards` | The drafting/engineering standards this server can work to, with what each one sets (projection, drawing standard, general tolerance, threads, fasteners, materials, sheet sizes). Show these to the user to choose from. |  |

@@ -35,7 +35,7 @@
 | Tool | What it does | Arguments |
 |---|---|---|
 | `set_view` | Orient the active 3D view: iso, iso_left, iso_bottom, front, back, top, bottom, left, right, home. | `view`, `fit` |
-| `screenshot` | Save a PNG of the active document's view (model or drawing sheet) — look at it to check your work. Each image comes with its scale (mm per pixel) so sizes on it can be read off. With views, one PNG per orientation in a single call, and the user's camera is put back afterwards. | `path`, `view`, `width`, `height`, `views` |
+| `screenshot` | Save a PNG of the active document's view (model or drawing sheet) — look at it to check your work. Each image comes with its scale (mm per pixel) so sizes on it can be read off. With views, one PNG per orientation in a single call, and the user's camera is put back afterwards. | `path`, `view`, `width`, `height`, `views`, `up` |
 
 ## Sketch
 

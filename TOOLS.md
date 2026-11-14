@@ -1,6 +1,6 @@
 # inventor-forge tools
 
-171 tools. Lengths mm, angles degrees, forces N, stresses MPa.
+174 tools. Lengths mm, angles degrees, forces N, stresses MPa.
 
 ## Session
 
@@ -10,10 +10,10 @@
 | `close_private_inventor` | Close the separate Inventor started by connect(private=true), discarding anything unsaved in it. Never touches an Inventor this session did not start. |  |
 | `list_projects` | Inventor projects known to this machine and which one is active. |  |
 | `set_active_project` | Switch Inventor's active project (by name or .ipj path). Inventor only allows this with no documents open. The active project is a per-user setting shared by every Inventor on the PC, so this refuses while another Inventor is running (its open files would start resolving against the new project). | `project`*, `other_inventors_ok` |
-| `status` | Active document summary (type, path, feature/sketch/body counts, volume, material). |  |
+| `status` | Summary of the document this session works on (type, path, feature/sketch/body counts, volume, material): the working document, else Inventor's active one. user_active names the document the user has in front when that is a different one. |  |
 | `list_documents` | Every open (visible) document, with the active one marked. |  |
 | `transaction` | Group several operations into one undo step: begin, commit, or abort (rolls everything back). | `action`, `name` |
-| `undo` | Undo the last N operations in the active document. | `steps` |
+| `undo` | Undo the last N operations in the working document. | `steps` |
 | `model_version` | A cheap fingerprint of the active document's geometry, for noticing edits made by hand in Inventor (it changes whenever the model's shape changes). |  |
 
 ## Documents
@@ -35,7 +35,7 @@
 | Tool | What it does | Arguments |
 |---|---|---|
 | `set_view` | Orient the active 3D view: iso, iso_left, iso_bottom, front, back, top, bottom, left, right, home. | `view`, `fit` |
-| `screenshot` | Save a PNG of the active document's view (model or drawing sheet) — look at it to check your work. | `path`, `view`, `width`, `height` |
+| `screenshot` | Save a PNG of the active document's view (model or drawing sheet) — look at it to check your work. Each image comes with its scale (mm per pixel) so sizes on it can be read off. With views, one PNG per orientation in a single call, and the user's camera is put back afterwards. | `path`, `view`, `width`, `height`, `views` |
 
 ## Sketch
 
@@ -51,6 +51,7 @@
 | `draw_closed_profile` | Connected polyline through [[x, y], ...] mm (closed back to the first point by default). Segments share endpoints, so the result is one clean profile. | `points`*, `close` |
 | `draw_slot` | Straight slot (obround): centre-to-centre length, width, centre (x, y), angle in degrees. | `length`*, `width`*, `x`, `y`, `angle` |
 | `draw_point` | Sketch point (a hole centre by default — hole(..., use_sketch_points=true) drills them all). | `x`*, `y`*, `hole_center` |
+| `check_sketch` | Why a sketch won't make a closed profile: open curve ends with their coordinates, small gaps between ends (to close with draw_line or by redrawing), points where three or more curves meet (Inventor can't tell which region you mean) and lines drawn twice. Run it when extrude/revolve says there is no closed profile. | `index`, `gap_mm` |
 | `sketch_info` | Entities, dimensions, profile count and constraint status of the active (or given) sketch. | `index` |
 | `list_sketch_curves` | Curves of the active (or given) sketch with the indices that the constraint and dimension tools take. | `index` |
 | `add_sketch_constraint` | Geometric constraint: horizontal, vertical (one line); parallel, perpendicular, equal, tangent, collinear, concentric (two curves). Curve indices from list_sketch_curves. | `type`*, `curve_one`*, `curve_two` |
@@ -171,7 +172,7 @@
 | `create_drawing` | New drawing document to a drafting standard: the template, projection angle and dimension style follow it. | `standard`, `sheet_size`, `orientation`, `name` |
 | `add_sheet` | Add a sheet to the drawing (with the template's border and title block) and make it active. | `sheet_size`, `orientation`, `name` |
 | `activate_sheet` | Activate a sheet by name or 1-based index. | `sheet`* |
-| `add_base_view` | Base view of a part/assembly (file path or open document name) centred at (x, y) sheet mm. | `model`, `x`, `y`, `scale`, `orientation`, `style`, `name` |
+| `add_base_view` | Base view of a part/assembly (file path or open document name) centred at (x, y) sheet mm. One base view per model per sheet: once the sheet has an orthographic view of a model, its other orthographic views (top, right, left...) must be projected from it with add_projected_view, which orients and aligns them by the sheet's projection angle. A second base view in Inventor's named orientations comes out wrong for models that aren't Y-up (a "right" view of a Z-up kart is the plan turned on its side), so it is refused. Isometric views are fine. | `model`, `x`, `y`, `scale`, `orientation`, `style`, `name` |
 | `add_projected_view` | Projected view from a parent view, placed at (x, y) sheet mm. Above/below/left/right gives the orthographic views (per the drawing's projection angle); a diagonal position gives an isometric. | `parent`*, `x`*, `y`*, `style`, `name` |
 | `add_section_view` | Full section through a parent view along a straight cutting line, placed at (x, y) sheet mm. | `parent`*, `x`*, `y`*, `cut`, `offset`, `label` |
 | `add_detail_view` | Circular detail (enlarged) view of part of a parent view. center/radius are sheet mm on the parent. | `parent`*, `center_x`*, `center_y`*, `radius`*, `x`*, `y`*, `scale`, `label` |
@@ -185,13 +186,13 @@
 | `add_hole_note` | Hole/thread note (Ø, depth, thread, counterbore...) on a hole's circular edge in a view. | `view`*, `edge`*, `x`, `y` |
 | `add_general_notes` | Free text note at (x, y) sheet mm (use \n for new lines, e.g. "NOTES:\n1. DEBURR ALL EDGES"). | `text`*, `x`, `y` |
 | `add_parts_list` | Parts list (BOM table) for an assembly view; default position above the title block. | `view`, `x`, `y` |
-| `auto_balloon` | Balloon every component visible in an assembly view, placed outside the view and linked to the parts list numbering. | `view` |
+| `auto_balloon` | Balloon every component visible in an assembly view, placed outside the view and linked to the parts list numbering. Items that already have a balloon on the sheet (from another view) are skipped, so a second call on another view only adds the missing ones. | `view` |
 | `set_title_block_field` | Fill title-block fields: title, drawing_number, drawn_by, checked_by, approved_by, revision, description, company, material, project. Writes the drawing's iProperties (which the title block shows) and any prompted entries with a matching name. | `fields`* |
 | `place_view_labels` | Show a label (name + scale) under every view; names views FRONT/TOP/RIGHT/ISO... from their orientation when they still have default names. |  |
 | `add_projection_symbol` | Put the projection-angle symbol on the sheet (a truncated cone and two circles, as AS 1100 and ISO call for). | `x`, `y`, `third_angle` |
 | `set_view_component_visibility` | Show or hide one component in a view, e.g. a large reference part that forces a small scale. | `view`*, `occurrence`*, `visible` |
 | `make_part_sheet` | One-shot detail drawing of a part: new drawing, FRONT + projected TOP/RIGHT laid out for the projection angle and clear of the title block, a shaded ISOMETRIC, retrieved model dimensions, hole position dimensions, centre marks, view labels, title block — then QA. Always render_sheet and look, and fix what check_drawing reports. | `model`, `views`, `scale`, `sheet_size`, `standard`, `dimensions`, `title`, `drawing_number`, `drawn_by`, `material` |
-| `make_assembly_sheet` | One-shot general-arrangement (GA) drawing of an assembly: FRONT + TOP, shaded ISOMETRIC, parts list above the title block, balloons, labels, title block, QA. | `model`, `scale`, `sheet_size`, `standard`, `title`, `drawing_number`, `drawn_by` |
+| `make_assembly_sheet` | One-shot general-arrangement (GA) drawing of an assembly: FRONT, TOP and RIGHT (projected, so each sits where the projection angle puts it), shaded ISOMETRIC, parts list above the title block, balloons, labels, title block, QA. To add a view afterwards, project it from FRONT with add_projected_view rather than placing a new base view: a base view of a Z-up model in Inventor's "right" orientation comes out as the plan on its side. | `model`, `scale`, `sheet_size`, `standard`, `title`, `drawing_number`, `drawn_by`, `up`, `views` |
 | `list_drawing_dimensions` | Dimensions on the active sheet: index (for the tools below), value, text, tolerance and text position. |  |
 | `set_dimension_tolerance` | Tolerance a drawing dimension: symmetric (±), deviation (upper/lower, mm) or an ISO fit such as hole_fit="H7" (a hole), shaft_fit="g6" (a shaft), or both for a fit. | `index`*, `upper`, `lower`, `symmetric`, `hole_fit`, `shaft_fit` |
 | `move_dimension_text` | Move a dimension's text to (x, y) sheet mm. | `index`*, `x`*, `y`* |
@@ -234,10 +235,12 @@
 
 | Tool | What it does | Arguments |
 |---|---|---|
+| `pending_call` | The call that came back early because Inventor showed a dialog (or took too long): whether it has finished now, its result or error, and any dialog Inventor still shows. Reads windows only, so it works while Inventor is blocked. | `wait_seconds` |
+| `answer_dialog` | Press a button on an Inventor dialog that is holding up a call (pending_call lists them), with a window message, not the mouse. Only use a button the user would agree to: ask them when it matters (e.g. "Save"). | `button`*, `title` |
 | `list_standards` | The drafting/engineering standards this server can work to, with what each one sets (projection, drawing standard, general tolerance, threads, fasteners, materials, sheet sizes). Show these to the user to choose from. |  |
 | `set_standard` | Set the standard for the rest of this session (ask the user first; list_standards has the options). Drawings use its template, projection angle and dimension style; standard parts and materials follow its series. | `standard`*, `drawing_units` |
 | `get_standard` | The standard chosen for this session, or chosen=false if the user hasn't been asked yet. |  |
-| `execute_python` | Run Python in a persistent namespace with the live Inventor objects: app, doc, cdef (component definition or None), tg (TransientGeometry), to (TransientObjects), K (all Inventor enum constants), items(collection), typed_call(obj, method, ...) for [out]-parameter methods, MM (=0.1, mm->cm). Inventor API units are cm and radians. The value of a final expression is returned; print() output too. Use it for anything the dedicated tools don't cover. | `code`* |
+| `execute_python` | Run Python in a persistent namespace with the live Inventor objects: app, doc, cdef (component definition or None), tg (TransientGeometry), to (TransientObjects), K (all Inventor enum constants), items(collection), typed_call(obj, method, ...) for [out]-parameter methods, MM (=0.1, mm->cm). Inventor API units are cm and radians. The value of a final expression is returned; print() output too. Use it for anything the dedicated tools don't cover. Every snippet is logged (time, SHA-256, outcome) to execute_python.log in the workdir. | `code`*, `undo_on_error` |
 | `reload_api` | Reload the tool modules from disk (after editing them) without restarting the server. |  |
 | `list_tools` | Tool names by group (session, documents, sketch, features, inspect, parameters, materials, properties, sheet_metal, assembly, drawing, analysis, view, system). | `group` |
 | `read_pdf_text` | Text of a PDF (datasheets, standards, drawings from others) using only Python's standard library. Works for most PDFs written with simple fonts; scanned pages and some embedded fonts give little or no text. | `path`*, `max_chars` |

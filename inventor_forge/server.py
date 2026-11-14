@@ -16,7 +16,8 @@ import traceback
 
 from . import __version__
 from .com import InventorError
-from .engine import Forge
+from .engine import Forge, tool_enabled
+from .registry import DESTRUCTIVE
 
 PROTOCOL = "2025-06-18"
 IMAGE_TOOLS = {"screenshot", "render_sheet"}
@@ -45,8 +46,11 @@ class Server:
     def tools_list(self) -> list[dict]:
         out = []
         for t in self.forge.tools.values():
+            if not tool_enabled(t):
+                continue
             out.append({"name": t.name, "description": t.description, "inputSchema": t.schema,
-                        "annotations": {"readOnlyHint": not t.mutates}})
+                        "annotations": {"readOnlyHint": not t.mutates,
+                                        "destructiveHint": t.name in DESTRUCTIVE}})
         return out
 
     def tools_call(self, name: str, args: dict) -> dict:

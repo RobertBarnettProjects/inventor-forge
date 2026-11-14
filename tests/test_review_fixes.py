@@ -160,3 +160,67 @@ def test_standard_labels_are_accepted():
     from inventor_forge.standards import key
     assert key("ASME Y14.5") == "ASME" and key("JIS B 0001") == "JIS" and key("DIN EN ISO 128") == "DIN"
     assert key("ISO 128") == "ISO" and key("AS 1100.101") == "AS1100"
+
+
+# --------------------------------------------------------------------------- MCP survey adoptions
+def test_destructive_and_read_only(monkeypatch):
+    from inventor_forge.engine import Forge, tool_enabled
+    from inventor_forge.registry import DESTRUCTIVE
+    from inventor_forge.server import Server
+    assert {"execute_python", "close_document", "answer_dialog"} <= DESTRUCTIVE
+    rows = {t["name"]: t["annotations"] for t in Server.__new__(Server).__class__.tools_list(
+        type("S", (), {"forge": type("F", (), {"tools": TOOLS})()})())}
+    assert rows["execute_python"]["destructiveHint"] and not rows["list_faces"]["destructiveHint"]
+    monkeypatch.setenv("INVENTOR_FORGE_READ_ONLY", "1")
+    f = Forge.__new__(Forge)
+    f.tools = TOOLS
+    with pytest.raises(InventorError, match="read-only"):
+        f.call("extrude", {"distance": 5})
+    monkeypatch.setenv("INVENTOR_FORGE_TOOLSETS", "sketch")
+    assert tool_enabled(TOOLS["draw_line"]) and not tool_enabled(TOOLS["extrude"]) and tool_enabled(TOOLS["pending_call"])
+
+
+def test_new_tools_registered():
+    for n in ("check_sketch", "pending_call", "answer_dialog"):
+        assert n in TOOLS
+    assert "undo_on_error" in TOOLS["execute_python"].schema["properties"]
+    assert "views" in TOOLS["screenshot"].schema["properties"]
+
+
+def test_call_held_by_a_dialog_comes_back_early(monkeypatch):
+    """The engine reports an Inventor dialog that holds a call, then pending_call follows it to the end."""
+    import threading
+
+    from inventor_forge import engine as E
+    from inventor_forge import uidrive as U
+    from inventor_forge.com import Apartment
+    release = threading.Event()
+    f = E.Forge.__new__(E.Forge)
+    f.tools, f.pending, f.apartment = TOOLS, None, Apartment("test-sta")
+    f.session = type("S", (), {"pid": 4242, "solver_busy": lambda self: [], "forge": None})()
+    f.session.forge = f
+    dialog = [{"hwnd": 7, "title": "Inventor", "text": "Sketch not closed", "buttons": ["OK"]}]
+    shown = {"on": False}
+    monkeypatch.setattr(U, "dialog_rows", lambda pid, skip=None: dialog if shown["on"] else [])
+    monkeypatch.setattr(U, "modal_blocked", lambda pid: shown["on"])
+    monkeypatch.setattr(E, "DIALOG_GRACE", 0.5)
+    real = TOOLS["status"]
+
+    def held(s):
+        shown["on"] = True
+        release.wait(10)
+        shown["on"] = False
+        return {"done": True}
+    monkeypatch.setitem(TOOLS, "status", E.Tool("status", "session", held, "", {"type": "object", "properties": {}},
+                                                  False, True) if hasattr(E, "Tool") else
+                        type(real)("status", "session", held, "", {"type": "object", "properties": {}}, False, True))
+    with pytest.raises(InventorError, match="Sketch not closed"):
+        f.call("status")
+    p = TOOLS["pending_call"].fn(f.session)
+    assert p["pending"] and p["dialogs"][0]["text"] == "Sketch not closed"
+    with pytest.raises(InventorError, match="still waiting"):
+        f.call("status")
+    release.set()
+    p = TOOLS["pending_call"].fn(f.session, wait_seconds=5)
+    assert p["finished"] and p["result"] == {"done": True} and f.pending is None
+    f.apartment.close()

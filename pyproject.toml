@@ -18,3 +18,6 @@ inventor-forge = "inventor_forge.server:main"
 
 [tool.setuptools.packages.find]
 include = ["inventor_forge*"]
+
+[tool.setuptools.package-data]
+inventor_forge = ["guides/*.md"]

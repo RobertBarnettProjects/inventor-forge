@@ -472,7 +472,8 @@ def copy_assembly(s: Session, folder: str, prefix: str = "", old_prefix: str = "
     files, missing = _walk_files(d.File)
     if missing:
         raise InventorError(f"the assembly has missing references ({missing[:6]}); fix them before copying")
-    plan = copy_plan(list(files), root, folder, prefix, old_prefix)
+    originals = [safe(lambda f=f: f.FullFileName, "") or n for n, f in files.items()]   # names as written
+    plan = copy_plan(originals, root, folder, prefix, old_prefix)
     plan.setdefault(_norm(src), os.path.join(folder, renamed(os.path.basename(src), prefix, old_prefix)))
     clash = [p for p in plan.values() if os.path.exists(p)]
     if clash:

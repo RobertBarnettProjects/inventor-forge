@@ -22,6 +22,7 @@
 - Never rename or move a folder other copies may still link to: their studies fail with "Invalid constraint".
 - Repointing can drop Stress Analysis contacts, which automatic contacts recreate as Bonded. `copy_assembly`
   compares contact types before and after; set them again if they changed.
+- Component names inside the copy keep the original names (`K1_Post:1`); only the files are renamed.
 - Prune studies before copying (`purge_studies`): each study's mesh and results are copied with the model.
 
 ## Saving

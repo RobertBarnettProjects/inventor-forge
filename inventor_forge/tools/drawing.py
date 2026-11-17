@@ -637,11 +637,80 @@ def _ballooned_items(sh) -> set:
     return out
 
 
+def _curve_shape(c):
+    """A drawing curve's geometry read once, in sheet mm: ("circle", cx, cy, r), ("line", x0, y0, x1, y1) or
+    ("box", l, b, r, t) for anything else (arcs and splines are treated as their bounding box)."""
+    cp, rad = safe(lambda: c.CenterPoint), safe(lambda: c.Radius)
+    if cp is not None and rad and _is_circle(c):
+        return ("circle", cp.X * 10, cp.Y * 10, rad * 10)
+    if safe(lambda: c.CurveType) in (K.get("kLineCurve"), K.get("kLineSegmentCurve"), K.get("kLineSegmentCurve2d")):
+        sp, ep = safe(lambda: c.StartPoint), safe(lambda: c.EndPoint)
+        if sp is not None and ep is not None:
+            return ("line", sp.X * 10, sp.Y * 10, ep.X * 10, ep.Y * 10)
+        from ..com import typed_call            # silhouette lines have no start/end points: ask the evaluator
+        ends = safe(lambda: typed_call(c.Evaluator2D, "GetEndPoints", [0.0, 0.0], [0.0, 0.0]))
+        if ends and len(ends) >= 2 and len(ends[-2]) == 2 and len(ends[-1]) == 2:
+            (x0, y0), (x1, y1) = ends[-2], ends[-1]
+            return ("line", x0 * 10, y0 * 10, x1 * 10, y1 * 10)
+    b = _curve_box(c)
+    return ("box", b[0] * 10, b[1] * 10, b[2] * 10, b[3] * 10) if b is not None else None
+
+
+def _near_shape(g, x, y, tol) -> bool:
+    """Is sheet point (x, y mm) within tol mm of a shape from _curve_shape?"""
+    if g[0] == "circle":
+        return abs(math.hypot(x - g[1], y - g[2]) - g[3]) <= tol
+    if g[0] == "line":
+        return _seg_dist(x, y, *g[1:]) <= tol
+    return g[1] - tol <= x <= g[3] + tol and g[2] - tol <= y <= g[4] + tol
+
+
+def _existing_leaders(sh) -> list:
+    """((x0, y0), (x1, y1)) in sheet mm for every balloon's leader on the sheet: balloon to attach point."""
+    out = []
+    for bl in items(sh.Balloons):
+        nodes = [nd for nd in items(safe(lambda bl=bl: bl.Leader.AllNodes)) if safe(lambda nd=nd: nd.Position)]
+        if len(nodes) >= 2:
+            a, b = nodes[0].Position, nodes[-1].Position
+            out.append(((a.X * 10, a.Y * 10), (b.X * 10, b.Y * 10)))
+    return out
+
+
+def _seg_dist(px, py, ax, ay, bx, by) -> float:
+    dx, dy = bx - ax, by - ay
+    L2 = dx * dx + dy * dy
+    t = 0.0 if L2 < 1e-12 else max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / L2))
+    return math.hypot(px - (ax + t * dx), py - (ay + t * dy))
+
+
+def _seg_hits_box(x0, y0, x1, y1, box) -> bool:
+    """Does the segment (x0, y0)-(x1, y1) pass through the box (left, bottom, right, top)?"""
+    l, b, r_, t_ = box
+    if max(x0, x1) < l or min(x0, x1) > r_ or max(y0, y1) < b or min(y0, y1) > t_:
+        return False
+    for k in range(21):
+        x, y = x0 + (x1 - x0) * k / 20, y0 + (y1 - y0) * k / 20
+        if l <= x <= r_ and b <= y <= t_:
+            return True
+    return False
+
+
+ATTACH_CLEAR = 3.0      # mm: another part's outline this close to an attach point makes it ambiguous
+ATTACH_APART = 10.0     # mm: two balloons' attach points closer than this read as the same place
+
+
 @tool("drawing")
-def auto_balloon(s: Session, view: str = "") -> dict:
+def auto_balloon(s: Session, view: str = "", unambiguous_only: bool = False, max_depth: float = 1.0) -> dict:
     """Balloon every component visible in an assembly view, placed outside the view and linked to
     the parts list numbering. Items that already have a balloon on the sheet (from another view) are skipped,
-    so a second call on another view only adds the missing ones."""
+    so a second call on another view only adds the missing ones.
+
+    Each leader lands on a point that is clearly on its own part (no other part's outline close by), near the
+    view's edge, and apart from the other balloons' points; on a circle it meets the rim square-on.
+    unambiguous_only: leave out parts that have no such clear point in this view (balloon them on another view)
+    max_depth: leave out parts whose nearest point is deeper inside the view than this fraction of the view's
+      smaller side (another view may show them nearer its edge, with a shorter leader); 1 = no limit
+    """
     sh = _sheet(s)
     if view:
         v = _view(s, view)
@@ -657,23 +726,42 @@ def auto_balloon(s: Session, view: str = "") -> dict:
     box = _box(v)
     already = _ballooned_items(sh)
     taken = [((bb.Position.X * 10), (bb.Position.Y * 10)) for bb in items(sh.Balloons) if safe(lambda bb=bb: bb.Position)]
-    # one attach point per part: the midpoint of its curve closest to the view's outline, so the leader is short
-    # and runs straight out instead of across the rest of the assembly
-    want, done = [], set()
+    # one attach point per part: on its own outline with no other part's outline close by (so it can't be read as
+    # pointing at a neighbour), near the view's outline (a short leader that runs straight out), and apart from the
+    # other balloons' points
+    by_file: dict = {}                                  # one balloon per part file: pool every instance's curves
     for occ in items(md.ComponentDefinition.Occurrences):
         fname = safe(lambda o=occ: o.Definition.Document.FullFileName, occ.Name)
-        if fname in done:
-            continue
-        best = None
-        for c in _curves(v, occ):
+        by_file.setdefault(fname, [occ, []])[1].extend(_curves(v, occ))     # an instance hidden here adds none
+    occs = [(o, cs) for o, cs in by_file.values() if cs]
+    shapes = [(i, g) for i, (_, cs) in enumerate(occs) for g in (_curve_shape(c) for c in cs) if g is not None]
+    cands = []
+    for i, (occ, cs) in enumerate(occs):
+        rows = []
+        for c in cs:
             for x, y, on in _attach_points(c):
-                d = min(x - box[0], box[2] - x, y - box[1], box[3] - y)
-                if best is None or d < best[0]:
-                    best = (d, c, x, y, on)
-        if best is None:
+                if box[0] - 0.5 <= x <= box[2] + 0.5 and box[1] - 0.5 <= y <= box[3] + 0.5:
+                    rows.append({"curve": c, "x": x, "y": y, "point": on,
+                                 "edge": min(x - box[0], box[2] - x, y - box[1], box[3] - y)})
+        rows = sorted(rows, key=lambda w_: w_["edge"])[:40]          # the outermost points are the useful ones
+        for w_ in rows:
+            w_["crowd"] = sum(1 for j, g in shapes if j != i and _near_shape(g, w_["x"], w_["y"], ATTACH_CLEAR))
+        if rows:
+            cands.append(rows)
+    # parts with the fewest clear choices pick first
+    cands.sort(key=lambda rows: sum(1 for w_ in rows if w_["crowd"] == 0))
+    want, chosen = [], []
+    for rows in cands:
+        def cost(w_):
+            near = sum(1 for qx, qy in chosen if math.hypot(w_["x"] - qx, w_["y"] - qy) < ATTACH_APART)
+            return w_["crowd"] * 60 + near * 40 + w_["edge"]
+        best = min(rows, key=cost)
+        if unambiguous_only and best["crowd"]:
             continue
-        done.add(fname)
-        want.append({"curve": best[1], "x": best[2], "y": best[3], "point": best[4]})
+        if best["edge"] > max_depth * min(box[2] - box[0], box[3] - box[1]):
+            continue
+        chosen.append((best["x"], best["y"]))
+        want.append(best)
     out = _place_balloons(s, sh, v, box, want, taken, already)
     return {"balloons": out, "view": v.Name}
 
@@ -688,7 +776,9 @@ def _attach_points(c):
     if cp is None or not r:
         p_ = _pt(c)
         return [(p_.X * 10, p_.Y * 10, None)] if p_ is not None else []
-    return [((cp.X + dx * r) * 10, (cp.Y + dy * r) * 10, True) for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))]
+    centre = (cp.X * 10, cp.Y * 10, r * 10)      # the leader is aimed at the centre once the balloon is placed
+    return [((cp.X + math.cos(a) * r) * 10, (cp.Y + math.sin(a) * r) * 10, centre)
+            for a in (k * math.pi / 4 for k in range(8))]
 
 
 def _track(box, m):
@@ -749,23 +839,53 @@ def _place_balloons(s: Session, sh, v, box, want: list[dict], taken: list, alrea
     W, H = sh.Width * 10, sh.Height * 10
     tb = safe(lambda: sh.TitleBlock.RangeBox)
     blocked = [_lbox(o) for o in items(sh.DrawingViews) if o.Name != v.Name]
-    for o in items(sh.DrawingViews):                    # the view labels (placed later) sit centred above each view
+    for o in items(sh.DrawingViews):                    # the view titles (placed later) sit centred under each view
         ob = _box(o)
         mid = (ob[0] + ob[2]) / 2
-        blocked.append((mid - 45, ob[3] + 1, mid + 45, ob[3] + 16))
+        blocked.append((mid - 45, ob[1] - LABEL_DROP - 6, mid + 45, ob[1] - 1))
     blocked += [(q.RangeBox.MinPoint.X * 10, q.RangeBox.MinPoint.Y * 10, q.RangeBox.MaxPoint.X * 10, q.RangeBox.MaxPoint.Y * 10)
                 for q in items(sh.PartsLists)]
     if tb is not None:
         blocked.append((tb.MinPoint.X * 10, tb.MinPoint.Y * 10, tb.MaxPoint.X * 10, tb.MaxPoint.Y * 10))
+    leaders = _existing_leaders(sh)                     # leaders on the sheet already: new ones mustn't cross them
 
-    def free(px, py, own):
+    def target(w_, px, py):
+        """Where the leader ends: on a circle, the rim point facing the balloon (square-on to the rim)."""
+        if isinstance(w_.get("point"), tuple):
+            cx, cy, rad = w_["point"]
+            d = math.hypot(px - cx, py - cy) or 1.0
+            return cx + (px - cx) / d * rad, cy + (py - cy) / d * rad
+        return w_["x"], w_["y"]
+
+    def crosses(a0, a1, b0, b1) -> bool:
+        def side(p, q, r_):
+            return (q[0] - p[0]) * (r_[1] - p[1]) - (q[1] - p[1]) * (r_[0] - p[0])
+        d1, d2 = side(b0, b1, a0), side(b0, b1, a1)
+        d3, d4 = side(a0, a1, b0), side(a0, a1, b1)
+        return d1 * d2 < 0 and d3 * d4 < 0
+
+    def free(px, py, own, w_):
         bx_ = (px - 7, py - 7, px + 7, py + 7)
-        return (16 < px < W - 16 and 16 < py < H - 16 and not _overlap(bx_, box)
+        if not (16 < px < W - 16 and 16 < py < H - 16 and not _overlap(bx_, box)
                 and not any(_overlap(bx_, o) for o in blocked)
-                and all(math.hypot(px - qx, py - qy) >= BALLOON_GAP for qx, qy in taken + own))
+                and all(math.hypot(px - qx, py - qy) >= BALLOON_GAP for qx, qy in taken + own)):
+            return False
+        tx, ty = target(w_, px, py)
+        if any(_seg_hits_box(px, py, tx, ty, o) for o in blocked):      # leaders don't cross titles or other views
+            return False
+        if any(_seg_dist(qx, qy, px, py, tx, ty) < 7.5 for qx, qy in taken + own):     # nor other balloons
+            return False
+        for a, b in leaders:                            # nor cross, or pass close to, another leader
+            if crosses((px, py), (tx, ty), a, b) or (clear and min(
+                    _seg_dist(a[0], a[1], px, py, tx, ty), _seg_dist(b[0], b[1], px, py, tx, ty),
+                    _seg_dist(tx, ty, a[0], a[1], b[0], b[1])) < clear):
+                return False
+        return True
 
     placed, left = 0, list(want)
-    for m in (16, 32, 48):                              # nearest track first; parts that don't fit move out a ring
+    # nearest track first, parts that don't fit move out a ring; a last ring keeps leaders from crossing but lets
+    # them run closer together, so no part is left without a balloon
+    for m, clear in ((16, LEADER_CLEAR), (32, LEADER_CLEAR), (48, LEADER_CLEAR), (32, 0.0), (48, 0.0)):
         if not left:
             break
         tr = _track(box, m)
@@ -776,7 +896,7 @@ def _place_balloons(s: Session, sh, v, box, want: list[dict], taken: list, alrea
             for k in range(0, 9):                       # nudge along the track if this spot is blocked
                 for sgn in ((1,) if k == 0 else (1, -1)):
                     px, py = _track_point(tr, u + sgn * k * BALLOON_GAP / 3)
-                    if free(px, py, own):
+                    if free(px, py, own, w_):
                         spot = (px, py)
                         break
                 if spot:
@@ -785,8 +905,9 @@ def _place_balloons(s: Session, sh, v, box, want: list[dict], taken: list, alrea
                 nxt.append(w_)
                 continue
             c = w_["curve"]
-            if w_.get("point"):                         # a circle: attach at the rim point nearest the outside
-                at = s.tg.CreatePoint2d(w_["x"] * MM, w_["y"] * MM)
+            tx, ty = target(w_, *spot)
+            if isinstance(w_.get("point"), tuple):      # a circle: the rim point facing the balloon
+                at = s.tg.CreatePoint2d(tx * MM, ty * MM)
                 intent = safe(lambda c=c, at=at: sh.CreateGeometryIntent(c, at)) or sh.CreateGeometryIntent(c)
             else:
                 intent = safe(lambda c=c: sh.CreateGeometryIntent(c, K.kMidPointIntent)) or sh.CreateGeometryIntent(c)
@@ -800,6 +921,7 @@ def _place_balloons(s: Session, sh, v, box, want: list[dict], taken: list, alrea
                 continue
             already |= nums
             own.append(spot)
+            leaders.append((spot, (tx, ty)))
             placed += 1
         taken += own
         left = nxt
@@ -843,23 +965,96 @@ def set_title_block_field(s: Session, fields: dict) -> dict:
 
 @tool("drawing")
 def place_view_labels(s: Session) -> dict:
-    """Show a label (name + scale) under every view; names views FRONT/TOP/RIGHT/ISO... from their
-    orientation when they still have default names."""
+    """Show a title (name + scale) centred under every view, below any dimensions or balloons there; names views
+    FRONT/TOP/RIGHT/ISO... from their orientation when they still have default names."""
     sh = _sheet(s)
     names = {"kFrontViewOrientation": "FRONT", "kTopViewOrientation": "TOP", "kRightViewOrientation": "RIGHT",
              "kLeftViewOrientation": "LEFT", "kBottomViewOrientation": "BOTTOM", "kBackViewOrientation": "BACK",
              "kIsoTopRightViewOrientation": "ISOMETRIC", "kIsoTopLeftViewOrientation": "ISOMETRIC"}
+    under = [b for b in (_text_box(dm) for dm in items(sh.DrawingDimensions)) if b]
+    under += [(p.X * 10 - 7, p.Y * 10 - 7, p.X * 10 + 7, p.Y * 10 + 7)
+              for p in (safe(lambda bl=bl: bl.Position) for bl in items(sh.Balloons)) if p is not None]
     out = []
     for v in items(sh.DrawingViews):
         o = K.name_of(safe(lambda v=v: v.Camera.ViewOrientationType, 0), "k")
         if v.Name.upper().startswith("VIEW") and o in names:
             safe(lambda v=v: setattr(v, "Name", names[o] + ("" if names[o] not in [x["name"] for x in out] else " 2")))
         v.ShowLabel = True
+        b = _box(v)
+        mid = (b[0] + b[2]) / 2
+        y = b[1] - LABEL_DROP
+        for ob in under:                                # below any dimension or balloon right under the view
+            if ob[2] > mid - 40 and ob[0] < mid + 40 and b[1] - 45 < ob[3] <= b[1] + 1:
+                y = min(y, ob[1] - 6)
+        safe(lambda v=v, y=y: setattr(v.Label, "Position", s.tg.CreatePoint2d(mid * MM, y * MM)))
         out.append({"name": v.Name, "scale": _scale_text(v.Scale)})
     return {"labels": out}
 
 
 # --------------------------------------------------------------------------- one-shot sheets
+def _image_size(path: str) -> tuple[int, int] | None:
+    """(width, height) in pixels of a PNG, JPEG or BMP, from its header."""
+    import struct
+    try:
+        with open(path, "rb") as f:
+            head = f.read(32)
+            if head[:8] == b"\x89PNG\r\n\x1a\n":
+                return struct.unpack(">II", head[16:24])
+            if head[:2] == b"BM":
+                w, h = struct.unpack("<ii", head[18:26])
+                return w, abs(h)
+            if head[:2] == b"\xff\xd8":
+                f.seek(2)
+                while True:
+                    marker, size = struct.unpack(">HH", f.read(4))
+                    if 0xFFC0 <= marker <= 0xFFCF and marker not in (0xFFC4, 0xFFC8, 0xFFCC):
+                        h, w = struct.unpack(">xHH", f.read(5))
+                        return w, h
+                    f.seek(size - 2, 1)
+    except Exception:
+        return None
+    return None
+
+
+def _place_logo(s: Session, path: str) -> dict:
+    """Put a logo image in the title block's free cell (its lower-left, where a company name or logo goes), scaled
+    to fit with its proportions kept."""
+    sh = _sheet(s)
+    tb = safe(lambda: sh.TitleBlock.RangeBox)
+    size = _image_size(path)
+    if tb is None or not size or not os.path.exists(path):
+        return {"logo": False, "reason": "no title block" if tb is None else "image not found or not PNG/JPEG/BMP"}
+    l, b = tb.MinPoint.X * 10, tb.MinPoint.Y * 10
+    cw, ch = (tb.MaxPoint.X * 10 - l) * 0.43, (tb.MaxPoint.Y * 10 - b) * 0.62
+    pad = 2.0
+    fit = min((cw - 2 * pad) / size[0], (ch - 2 * pad) / size[1])
+    w, h = size[0] * fit, size[1] * fit
+    x0, y0 = l + (cw - w) / 2, b + (ch - h) / 2
+    # a sheet sketch can't hold an image through the API, a sketched symbol's sketch can: embed it in a symbol
+    d = s.drawing()
+    name = "Logo " + os.path.splitext(os.path.basename(path))[0]
+    defn = next((o for o in items(d.SketchedSymbolDefinitions) if o.Name == name), None)
+    if defn is None:
+        defn = d.SketchedSymbolDefinitions.Add(name)
+        sk = defn.Edit()
+        img = sk.SketchImages.Add(path, s.tg.CreatePoint2d(0, 0), False)    # embedded, top-left at the origin
+        img.Width, img.Height = w * MM, h * MM
+        defn.ExitEdit(True)
+    for old in list(items(sh.SketchedSymbols)):
+        if safe(lambda o=old: o.Definition.Name) == name:
+            safe(lambda o=old: o.Delete())
+    sym = sh.SketchedSymbols.Add(defn, s.tg.CreatePoint2d(x0 * MM, y0 * MM), 0.0, 1.0)
+    rb = safe(lambda: sym.RangeBox)
+    if rb is not None:                                  # move it so its box sits exactly in the cell
+        dx, dy = x0 - rb.MinPoint.X * 10, y0 - rb.MinPoint.Y * 10
+        sym.Position = s.tg.CreatePoint2d(sym.Position.X + dx * MM, sym.Position.Y + dy * MM)
+    return {"logo": True, "box_mm": [r(x0, 1), r(y0, 1), r(x0 + w, 1), r(y0 + h, 1)]}
+
+
+def _logo_path(logo: str) -> str:
+    return logo or os.environ.get("INVENTOR_FORGE_LOGO", "")
+
+
 def _region(sh) -> dict:
     """Free drawing area: inside a 10 mm border margin and above the title block band."""
     W, H = sh.Width * 10, sh.Height * 10
@@ -949,17 +1144,29 @@ def _layout(s: Session, md, want: list[str], third: bool, scale: float, label_ga
     if has_right:
         made.append(add_projected_view(s, "FRONT", right_x, fy, name="RIGHT")["view"])
     if "iso" in want:
-        iso_x0 = g["x0"] + block_w + 10
-        iso_w, iso_h = g["x1"] - iso_x0, (g["y1"] - g["y0"]) * 0.55
-        diag = math.sqrt(L[0] ** 2 + L[1] ** 2 + L[2] ** 2) or 1
-        iso_sc = _pick_scale(diag, diag * 0.85, iso_w - 10, iso_h - label_gap)
-        iso_sc = min(iso_sc, sc)
-        at = s.tg.CreatePoint2d((iso_x0 + iso_w / 2) * MM, (g["y1"] - iso_h / 2) * MM)
+        # the largest free rectangle for it: beside TOP and above RIGHT when both are drawn (third angle), else the
+        # top-right corner
+        ob = [_box(_view(s, n)) for n in ("FRONT", "TOP", "RIGHT") if any(o.Name == n for o in items(sh.DrawingViews))]
+        if third and has_top and has_right:
+            iso_x0 = max(b_[2] for b_ in ob[:2]) + gap
+            iso_y0 = max(b_[3] for b_ in ob if b_ is not ob[1]) + label_gap + 8
+        else:
+            iso_x0 = g["x0"] + block_w + 10
+            iso_y0 = g["y1"] - (g["y1"] - g["y0"]) * 0.55
+        iso_w, iso_h = g["x1"] - iso_x0, g["y1"] - iso_y0 - label_gap
+        at = s.tg.CreatePoint2d((iso_x0 + iso_w / 2) * MM, (iso_y0 + label_gap + iso_h / 2) * MM)
         v = None
         if base == "bottom":             # a Z-up model: Inventor's iso orientations assume Y up, so aim a camera
-            v = safe(lambda: _z_up_iso(s, sh, md, at, iso_sc))
+            v = safe(lambda: _z_up_iso(s, sh, md, at, sc))
         if v is None:
-            v = sh.DrawingViews.AddBaseView(md, at, iso_sc, K.kIsoTopRightViewOrientation, K.kShadedDrawingViewStyle)
+            v = sh.DrawingViews.AddBaseView(md, at, sc, K.kIsoTopRightViewOrientation, K.kShadedDrawingViewStyle)
+        # as large as fits, up to the main scale: measure the placed view and step down the standard scales
+        for cand in [x for x in STANDARD_SCALES if x <= sc]:
+            v.Scale = cand
+            b_ = _box(v)
+            if b_[2] - b_[0] <= iso_w and b_[3] - b_[1] <= iso_h:
+                break
+        v.Position = at
         v.Name = "ISOMETRIC"
         made.append(_view_row(v))
     return {"scale": sc, "views": made}
@@ -1497,6 +1704,12 @@ def add_projection_symbol(s: Session, x: float = 0.0, y: float = 0.0, third_angl
             lines.AddByTwoPoints(pt(a, b), pt(c, e))
         circles.AddByCenterRadius(pt(ring_x, 0.0), 0.5)
         circles.AddByCenterRadius(pt(ring_x, 0.0), 0.25)
+        # centre lines (chain lines): through the cone's axis and the circles, and across the circles
+        lo, hi = min(cone_x, ring_x - 0.5) - 0.25, max(cone_x + 1.0, ring_x + 0.5) + 0.25
+        for p0, p1 in (((lo, 0.0), (hi, 0.0)), ((ring_x, -0.75), (ring_x, 0.75))):
+            ln = lines.AddByTwoPoints(pt(*p0), pt(*p1))
+            safe(lambda ln=ln: setattr(ln, "LineType", K.kChainLineType))
+            safe(lambda ln=ln: setattr(ln, "LineWeight", 0.018))
         defn.ExitEdit(True)
     for old in list(items(sh.SketchedSymbols)):
         if safe(lambda o=old: o.Definition.Name) == name:
@@ -1528,7 +1741,8 @@ def set_view_component_visibility(s: Session, view: str, occurrence: str, visibl
 @tool("drawing")
 def make_part_sheet(s: Session, model: str = "", views: str = "front,top,right,iso", scale: float = 0.0,
                     sheet_size: str = "A3", standard: str = "", dimensions: bool = True,
-                    title: str = "", drawing_number: str = "", drawn_by: str = "", material: str = "") -> dict:
+                    title: str = "", drawing_number: str = "", drawn_by: str = "", material: str = "",
+                    logo: str = "") -> dict:
     """One-shot detail drawing of a part: new drawing, FRONT + projected TOP/RIGHT laid out for the
     projection angle and clear of the title block, a shaded ISOMETRIC, retrieved model dimensions,
     hole position dimensions, centre marks, view labels, title block — then QA. Always render_sheet
@@ -1536,6 +1750,7 @@ def make_part_sheet(s: Session, model: str = "", views: str = "front,top,right,i
 
     views: comma list from front, top, right, iso
     scale: 0 = largest standard scale that fits
+    logo: image (PNG/JPEG/BMP) for the title block's free cell; default: the INVENTOR_FORGE_LOGO setting, if any
     """
     md = _model_doc(s, model)
     if s.kind(md) != "part":
@@ -1593,6 +1808,8 @@ def make_part_sheet(s: Session, model: str = "", views: str = "front,top,right,i
     set_title_block_field(s, fields)
     safe(lambda: add_projection_symbol(s, third_angle=third))
     note = safe(lambda: _standard_note(s, standard), {}) or {}
+    if _logo_path(logo):
+        steps["logo"] = (safe(lambda: _place_logo(s, _logo_path(logo)), {}) or {}).get("logo", False)
     return {"scale": _scale_text(lay["scale"]), "views": [m["name"] for m in lay["views"]], **steps,
             **({"notes_warning": note["warning"]} if note.get("warning") else {}), "qa": check_drawing(s)}
 
@@ -1686,7 +1903,7 @@ def _ga_sheet_size(s: Session, md, rows: int, base: str = "front", want=("front"
 @tool("drawing")
 def make_assembly_sheet(s: Session, model: str = "", scale: float = 0.0, sheet_size: str = "A3",
                         standard: str = "", title: str = "", drawing_number: str = "",
-                        drawn_by: str = "", up: str = "auto", views: str = "front,top,right") -> dict:
+                        drawn_by: str = "", up: str = "auto", views: str = "front,top,right", logo: str = "") -> dict:
     """One-shot general-arrangement (GA) drawing of an assembly: FRONT, TOP and RIGHT (projected, so each sits
     where the projection angle puts it), shaded ISOMETRIC, parts list above the title block, balloons, labels,
     title block, QA. To add a view afterwards, project it from FRONT with add_projected_view rather than placing a
@@ -1697,6 +1914,7 @@ def make_assembly_sheet(s: Session, model: str = "", scale: float = 0.0, sheet_s
     sheet_size: A3, A2, A1 or auto (the smallest sheet that reaches the largest standard scale)
     up: the model's up axis: y (Inventor's default), z (vehicles, frames, anything modelled on the XY ground
       plane), or auto (z when the model is flattest along Z)
+    logo: image (PNG/JPEG/BMP) for the title block's free cell; default: the INVENTOR_FORGE_LOGO setting, if any
     """
     md = _model_doc(s, model)
     if s.kind(md) != "assembly":
@@ -1723,23 +1941,34 @@ def make_assembly_sheet(s: Session, model: str = "", scale: float = 0.0, sheet_s
         for _ in range(4):
             if not _overlap(_box(iso), pl["box_mm"], 1):
                 break
-            iso.Scale = iso.Scale * 0.75
+            smaller = [x for x in STANDARD_SCALES if x < iso.Scale - 1e-9]
+            if not smaller:
+                break
+            iso.Scale = smaller[0]                      # the next standard scale down
             b = _box(iso)
             g = _region(sh)
             iso.Position = s.tg.CreatePoint2d((g["x1"] - (b[2] - b[0]) / 2 - 2) * MM,
                                               (g["y1"] - (b[3] - b[1]) / 2 - 2) * MM)
-    bl = auto_balloon(s)
-    # parts hidden in that view (rims inside tyres in a plan) get their balloon on another orthographic view
-    for other in ("FRONT", "TOP", "RIGHT"):
-        if other != bl.get("view") and any(o.Name == other for o in items(sh.DrawingViews)):
-            extra = safe(lambda o=other: auto_balloon(s, view=o), {"balloons": 0})
+    # every part on a point clearly its own: the main view first, then the other orthographic views for parts that
+    # are hidden or crowded there (rims inside tyres in a plan); anything still missing goes where it fits best
+    # passes from strict to loose: a clear point near the view's edge, then a point not deep inside the view (a part
+    # buried in one view is usually near the edge of another), then anywhere
+    bl = auto_balloon(s, unambiguous_only=True, max_depth=0.2)
+    order = [bl.get("view")] + [o for o in ("FRONT", "TOP", "RIGHT") if o != bl.get("view")]
+    present = [o for o in order if any(w.Name == o for w in items(sh.DrawingViews))]
+    for k, (strict, depth) in enumerate(((True, 0.2), (True, 0.4), (False, 0.4), (True, 1.0), (False, 1.0))):
+        for other in present[1:] if k == 0 else present:
+            extra = safe(lambda o=other, st=strict, dp=depth: auto_balloon(s, view=o, unambiguous_only=st, max_depth=dp),
+                         {"balloons": 0})
             bl["balloons"] = bl.get("balloons", 0) + extra.get("balloons", 0)
     place_view_labels(s)
     set_title_block_field(s, {k: v for k, v in (("title", title or md.DisplayName.split(".")[0].upper()),
                                                 ("drawing_number", drawing_number), ("drawn_by", drawn_by)) if v})
     safe(lambda: add_projection_symbol(s, third_angle=third))
     note = safe(lambda: _standard_note(s, standard), {}) or {}
+    lg = safe(lambda: _place_logo(s, _logo_path(logo)), {}) if _logo_path(logo) else {}
     return {"scale": _scale_text(lay["scale"]), "sheet": sheet_size, "up": u, "parts_list_rows": pl["rows"], "balloons": bl["balloons"],
+            **({"logo": lg.get("logo")} if lg else {}),
             **({"notes_warning": note["warning"]} if note.get("warning") else {}),
             "qa": check_drawing(s)}
 
@@ -1871,6 +2100,8 @@ def _text_box(dim):
 
 
 BALLOON_GAP = 15.0          # mm between balloon centres
+LEADER_CLEAR = 6.0         # mm a new leader keeps from other leaders
+LABEL_DROP = 9.0           # mm from a view's bottom edge to its title's centre (titles sit under the views)
 
 
 def _overlap(a, b, pad=0.0) -> bool:

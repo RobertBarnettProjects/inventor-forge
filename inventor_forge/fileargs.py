@@ -26,8 +26,8 @@ READS: dict[str, tuple[str, ...]] = {
     "set_active_project": ("project",),
     "link_parameters": ("source",),
     "add_base_view": ("model",),
-    "make_part_sheet": ("model",),
-    "make_assembly_sheet": ("model",),
+    "make_part_sheet": ("model", "logo"),
+    "make_assembly_sheet": ("model", "logo"),
 }
 
 NAMES: dict[str, tuple[str, ...]] = {

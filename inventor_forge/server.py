@@ -111,7 +111,8 @@ class Server:
                 try:
                     text = guides.read(uri[len(GUIDE_URI):] if uri.startswith(GUIDE_URI) else "?")
                 except KeyError:
-                    return {"jsonrpc": "2.0", "id": mid, "error": {"code": -32602, "message": f"unknown resource {uri}"}}
+                    return {"jsonrpc": "2.0", "id": mid,
+                            "error": {"code": -32602, "message": f"unknown resource {uri}"}}
                 result = {"contents": [{"uri": uri, "mimeType": "text/markdown", "text": text}]}
             elif method == "prompts/list":
                 result = {"prompts": []}

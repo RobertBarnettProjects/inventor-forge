@@ -177,3 +177,53 @@ def write_stl(path: str, tris: list[Tri], header: str = "inventor-forge") -> Non
             n = _cross(_sub(t[1], t[0]), _sub(t[2], t[0]))
             ln = math.sqrt(sum(c * c for c in n)) or 1.0
             f.write(struct.pack("<12fH", n[0] / ln, n[1] / ln, n[2] / ln, *t[0], *t[1], *t[2], 0))
+
+
+def _dot(a, b):
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+
+def point_triangle_distance(p, tri) -> float:
+    """Distance from a point to a triangle (closest point on the triangle, edges and corners included)."""
+    a, b, c = tri
+    ab, ac, ap = _sub(b, a), _sub(c, a), _sub(p, a)
+    d1, d2 = _dot(ab, ap), _dot(ac, ap)
+    if d1 <= 0 and d2 <= 0:
+        return math.dist(p, a)
+    bp = _sub(p, b)
+    d3, d4 = _dot(ab, bp), _dot(ac, bp)
+    if d3 >= 0 and d4 <= d3:
+        return math.dist(p, b)
+    vc = d1 * d4 - d3 * d2
+    if vc <= 0 and d1 >= 0 and d3 <= 0:
+        t = d1 / (d1 - d3)
+        return math.dist(p, (a[0] + t * ab[0], a[1] + t * ab[1], a[2] + t * ab[2]))
+    cp = _sub(p, c)
+    d5, d6 = _dot(ab, cp), _dot(ac, cp)
+    if d6 >= 0 and d5 <= d6:
+        return math.dist(p, c)
+    vb = d5 * d2 - d1 * d6
+    if vb <= 0 and d2 >= 0 and d6 <= 0:
+        t = d2 / (d2 - d6)
+        return math.dist(p, (a[0] + t * ac[0], a[1] + t * ac[1], a[2] + t * ac[2]))
+    va = d3 * d6 - d5 * d4
+    if va <= 0 and (d4 - d3) >= 0 and (d5 - d6) >= 0:
+        t = (d4 - d3) / ((d4 - d3) + (d5 - d6))
+        return math.dist(p, (b[0] + t * (c[0] - b[0]), b[1] + t * (c[1] - b[1]), b[2] + t * (c[2] - b[2])))
+    den = 1.0 / (va + vb + vc)
+    v, w = vb * den, vc * den
+    return math.dist(p, (a[0] + ab[0] * v + ac[0] * w, a[1] + ab[1] * v + ac[1] * w, a[2] + ab[2] * v + ac[2] * w))
+
+
+def mesh_gap(tris_a: list, tris_b: list) -> float:
+    """Smallest distance between two triangle meshes: every vertex of each measured to the other's triangles
+    (exact between flat faces; curved faces carry the meshes' chord error)."""
+    best = math.inf
+    for src, dst in ((tris_a, tris_b), (tris_b, tris_a)):
+        boxes = [([min(q[i] for q in t) for i in range(3)], [max(q[i] for q in t) for i in range(3)], t) for t in dst]
+        for p in {p for t in src for p in t}:
+            for lo, hi, t in boxes:
+                if math.sqrt(sum(max(lo[i] - p[i], 0, p[i] - hi[i]) ** 2 for i in range(3))) >= best:
+                    continue
+                best = min(best, point_triangle_distance(p, t))
+    return best

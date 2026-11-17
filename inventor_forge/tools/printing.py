@@ -63,7 +63,8 @@ def export_capabilities(s: Session, extension: str = "") -> dict:
         return {"extension": extension, "available": False,
                 "note": f"no translator in this Inventor saves .{extension.lstrip('.')}"}
     return {"extension": extension, "available": True, "name": safe(lambda: tr.DisplayName, "?"),
-            "loaded": bool(safe(lambda: tr.Activated, False)), "saves_from": safe(lambda: tr.SupportsSaveCopyAsFrom, ""),
+            "loaded": bool(safe(lambda: tr.Activated, False)),
+            "saves_from": safe(lambda: tr.SupportsSaveCopyAsFrom, ""),
             "default_options": _default_options(s, tr, s.doc())}
 
 
@@ -299,10 +300,26 @@ def _overlap_mm3(s: Session, a, b) -> float:
         return 0.0
 
 
+def body_triangles(body, tol_cm: float = 0.002) -> list:
+    """A body's tessellation as triangles in mm."""
+    from ..com import typed_call
+    out = typed_call(body, "CalculateFacets", tol_cm, 0, 0, [], [], [])
+    arrays = [v for v in out if isinstance(v, (list, tuple))]
+    if len(arrays) < 3:
+        return []
+    coords, idx = arrays[0], arrays[2]
+    base = 1 if idx and min(idx) >= 1 else 0
+    pts = [(coords[3 * i] * 10, coords[3 * i + 1] * 10, coords[3 * i + 2] * 10) for i in range(len(coords) // 3)]
+    return [(pts[idx[k] - base], pts[idx[k + 1] - base], pts[idx[k + 2] - base]) for k in range(0, len(idx) - 2, 3)]
+
+
 def _gap_mm(s: Session, a, b) -> float | None:
-    d = safe(lambda: s.app.MeasureTools.GetMinimumDistance(a, b))
-    d = d[0] if isinstance(d, tuple) else d
-    return None if d is None else d * 10
+    """Smallest distance between two bodies, mm, from fine meshes of both (the measuring tools don't take bodies of
+    one part): exact between flat faces, within the mesh's chord error on curved ones."""
+    ta, tb = safe(lambda: body_triangles(a), []), safe(lambda: body_triangles(b), [])
+    if not ta or not tb:
+        return None
+    return meshio.mesh_gap(ta, tb)
 
 
 @tool("inspect", mutates=False)

@@ -44,7 +44,8 @@ def test_tools_named_in_guides_exist():
 def test_guides_are_mcp_resources():
     msgs = [{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
             {"jsonrpc": "2.0", "id": 2, "method": "resources/list"},
-            {"jsonrpc": "2.0", "id": 3, "method": "resources/read", "params": {"uri": "inventor-forge://guide/session"}},
+            {"jsonrpc": "2.0", "id": 3, "method": "resources/read",
+             "params": {"uri": "inventor-forge://guide/session"}},
             {"jsonrpc": "2.0", "id": 4, "method": "resources/read", "params": {"uri": "inventor-forge://guide/x"}}]
     p = subprocess.run([sys.executable, "-X", "utf8", "-m", "inventor_forge.server"],
                        input="\n".join(json.dumps(m) for m in msgs) + "\n", capture_output=True, text=True,

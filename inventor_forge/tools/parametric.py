@@ -395,7 +395,8 @@ def split_faces(s: Session, sketch: int = 0, faces: list[int] | None = None, too
             safe(lambda wp=wp: setattr(wp, "Visible", False))
             made.append(_split_with(s, sf, wp, faces, planes).Name + f" (plane {wp.Name})")
 
-    order = {"auto": [("lines", by_lines), ("surface", by_surface), ("plane", by_plane)], "lines": [("lines", by_lines)],
+    order = {"auto": [("lines", by_lines), ("surface", by_surface), ("plane", by_plane)],
+             "lines": [("lines", by_lines)],
              "surface": [("surface", by_surface)], "plane": [("plane", by_plane)]}[mode]
     used, errors = "", []
     for label, fn in order:

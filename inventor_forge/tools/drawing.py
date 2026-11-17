@@ -1248,7 +1248,8 @@ def _annotation_obstacles(sh) -> list:
                 out.append(_mm_box(rb))
         for sk in items(safe(lambda v=v: v.Sketches) or []):
             for ln in items(safe(lambda sk=sk: sk.SketchLines) or []):
-                for pt in (safe(lambda ln=ln: ln.StartSketchPoint.Geometry), safe(lambda ln=ln: ln.EndSketchPoint.Geometry)):
+                for pt in (safe(lambda ln=ln: ln.StartSketchPoint.Geometry),
+                           safe(lambda ln=ln: ln.EndSketchPoint.Geometry)):
                     q = safe(lambda pt=pt, sk=sk: sk.SketchToSheetSpace(pt)) if pt is not None else None
                     if q is not None:
                         out.append((q.X * 10 - 7, q.Y * 10 - 7, q.X * 10 + 7, q.Y * 10 + 7))

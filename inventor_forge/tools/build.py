@@ -191,6 +191,17 @@ def parametric_profile(s: Session, plane: str, loops: list, operation: str = "jo
     name: feature name
     body: body a cut/join acts on in a multi-body part
     """
+    cd = s.cdef()
+    n0 = cd.Sketches.Count
+    try:
+        return _profile_feature(s, plane, loops, operation, extrude, symmetric, revolve_axis, angle, name, body)
+    except Exception:
+        for i in range(cd.Sketches.Count, n0, -1):      # don't leave a half-built sketch behind
+            safe(lambda i=i: cd.Sketches.Item(i).Delete())
+        raise
+
+
+def _profile_feature(s: Session, plane, loops, operation, extrude, symmetric, revolve_axis, angle, name, body) -> dict:
     from .features import _check_targets, _op
     if plane.upper() not in PLANE_AXES:
         raise InventorError("plane must be XY, XZ or YZ")
@@ -224,22 +235,30 @@ def parametric_profile(s: Session, plane: str, loops: list, operation: str = "jo
     u_across = abs(u2.X - o2.X) > abs(u2.Y - o2.Y)
     u_dim, v_dim = (K.kHorizontalDim, K.kVerticalDim) if u_across else (K.kVerticalDim, K.kHorizontalDim)
     gc, dc = sk.GeometricConstraints, sk.DimensionConstraints
+    skipped: list[str] = []
 
     def p2(uv):
         m = [0.0, 0.0, 0.0]
         m[iu], m[iv] = val(uv[0]) * MM, val(uv[1]) * MM
         return sk.ModelToSketchSpace(tg.CreatePoint(*m))
 
-    def pin(sp, uv):
-        """Fix a sketch point to its expressions: on an axis for "0", else a driven distance from the origin."""
+    def pin(sp, uv, only=None):
+        """Fix a sketch point to its expressions: on an axis for "0", else a driven distance from the origin (only:
+        just coordinate 0 or 1). Inventor refuses a constraint that is already implied (a point on a line that already
+        lies on the axis); those are skipped, and the sketch's constraint status shows whether anything is left free."""
         g = sp.Geometry
-        for e, on_axis, orient in ((uv[0], axis_v, u_dim), (uv[1], axis_u, v_dim)):
+        for i, (e, on_axis, orient) in enumerate(((uv[0], axis_v, u_dim), (uv[1], axis_u, v_dim))):
+            if only is not None and i != only:
+                continue
             _neg, core = split(e)
-            if core == "0":
-                gc.AddCoincident(sp, on_axis)
-            else:
-                dim = dc.AddTwoPointDistance(origin, sp, orient, tg.CreatePoint2d(g.X + 0.4, g.Y + 0.4))
-                dim.Parameter.Expression = core
+            try:
+                if core == "0":
+                    gc.AddCoincident(sp, on_axis)
+                else:
+                    dim = dc.AddTwoPointDistance(origin, sp, orient, tg.CreatePoint2d(g.X + 0.4, g.Y + 0.4))
+                    dim.Parameter.Expression = core
+            except Exception:  # noqa: BLE001
+                skipped.append(f"{e} at {uv}")
 
     curves = 0
     for steps in parsed:
@@ -252,41 +271,45 @@ def parametric_profile(s: Session, plane: str, loops: list, operation: str = "jo
             curves += 1
             continue
         start_uv = steps[0]["to"]
-        first_sp = None
-        prev = None
-        segs = steps[1:] + [{"kind": "line", "to": start_uv, "close": True}] \
-            if steps[-1]["to"] != start_uv else steps[1:]
-        pending_pin = [(None, start_uv)]
+        segs = steps[1:] if steps[-1]["to"] == start_uv else steps[1:] + [{"kind": "line", "to": start_uv}]
+        ends = [start_uv] + [sg["to"] for sg in segs]
+        first_sp = prev_end = None
         for k, seg in enumerate(segs):
-            closing = k == len(segs) - 1
-            a = prev if prev is not None else p2(start_uv)
-            b = first_sp if closing and first_sp is not None else p2(seg["to"])
+            a2, b2 = p2(ends[k]), p2(ends[k + 1])
             if seg["kind"] == "arc":
-                end_uv = start_uv if closing else seg["to"]
-                prev_uv = segs[k - 1]["to"] if k else start_uv
-                ra = arc_radius_mismatch([val(x) for x in prev_uv], [val(x) for x in end_uv],
+                ra = arc_radius_mismatch([val(x) for x in ends[k]], [val(x) for x in ends[k + 1]],
                                          [val(x) for x in seg["center"]])
                 if ra > 1e-3:
                     raise InventorError(f"arc to {seg['to']} around {seg['center']}: its ends are {ra:.4f} mm apart "
                                         "in distance from the centre, so no arc fits; check the expressions")
-                cpt = p2(seg["center"])
-                arc = sk.SketchArcs.AddByCenterStartEndPoint(cpt, a, b, not seg["cw"])
-                sp_start, sp_end = arc.StartSketchPoint, arc.EndSketchPoint
-                if seg["cw"]:
-                    sp_start, sp_end = sp_end, sp_start
-                pin(arc.CenterSketchPoint, seg["center"])
+                curve = sk.SketchArcs.AddByCenterStartEndPoint(p2(seg["center"]), a2, b2, not seg["cw"])
+                cu = [val(x) for x in seg["center"]]
+                if k < len(segs) - 1:
+                    pin(curve.CenterSketchPoint, seg["center"])
+                else:                                  # both ends fixed already: the centre has one freedom left
+                    su, eu = [val(x) for x in ends[k]], [val(x) for x in ends[k + 1]]
+                    pin(curve.CenterSketchPoint, seg["center"], only=0 if abs(eu[1] - su[1]) >= abs(eu[0] - su[0])
+                        else 1)
             else:
-                ln = sk.SketchLines.AddByTwoPoints(a, b)
-                sp_start, sp_end = ln.StartSketchPoint, ln.EndSketchPoint
-            if first_sp is None:
-                first_sp = sp_start
-            if not closing:
-                pending_pin.append((sp_end, seg["to"]))
-            prev = sp_end
+                curve = sk.SketchLines.AddByTwoPoints(a2, b2)
+            sp1, sp2 = curve.StartSketchPoint, curve.EndSketchPoint
+            near = lambda sp, q: (sp.Geometry.X - q.X) ** 2 + (sp.Geometry.Y - q.Y) ** 2  # noqa: E731
+            if near(sp1, a2) > near(sp2, a2):          # an arc stored the other way round
+                sp1, sp2 = sp2, sp1
+            if prev_end is not None:
+                sp1.Merge(prev_end)                    # join to the previous segment (prev_end stays, pinned)
+            else:
+                first_sp = sp1
+                pin(sp1, ends[k])
+            if k < len(segs) - 1:
+                if seg["kind"] == "arc":                # an arc's end has one freedom once its start and centre are
+                    eu = [val(x) for x in ends[k + 1]]  # fixed: tie the coordinate that moves it along the arc
+                    pin(sp2, ends[k + 1], only=0 if abs(eu[0] - cu[0]) <= abs(eu[1] - cu[1]) else 1)
+                else:
+                    pin(sp2, ends[k + 1])
+            prev_end = sp2
             curves += 1
-        pin(first_sp, start_uv)
-        for sp, uv in pending_pin[1:]:
-            pin(sp, uv)
+        prev_end.Merge(first_sp)                       # close the loop onto the pinned first point
     d.Update()
     prof = sk.Profiles.AddForSolid()
     opv = _op(operation)
@@ -319,6 +342,8 @@ def parametric_profile(s: Session, plane: str, loops: list, operation: str = "jo
     out.update(feature=feat.Name, sketch=sk.Name, curves=curves,
                fully_constrained=status == K.kFullyConstrainedConstraintStatus,
                constraint_status=K.name_of(status, "k"))
+    if skipped and status != K.kFullyConstrainedConstraintStatus:
+        out["warning"] = f"some positions couldn't be tied to their expressions ({skipped[:4]}); check them"
     return _check_targets(s, out, feat, targets, operation)
 
 

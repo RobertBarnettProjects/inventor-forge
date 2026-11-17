@@ -369,7 +369,8 @@ def placement_boxes(s: Session, d) -> dict:
     kind = s.kind(d)
     if kind == "assembly":
         for o in items(safe(lambda: d.ComponentDefinition.Occurrences.AllLeafOccurrences) or []):
-            path = safe(lambda o=o: "/".join(x.Name for x in items(o.OccurrencePath)), "") or safe(lambda o=o: o.Name, "?")
+            path = (safe(lambda o=o: "/".join(x.Name for x in items(o.OccurrencePath)), "")
+                    or safe(lambda o=o: o.Name, "?"))
             rb = safe(lambda o=o: o.RangeBox)
             if rb is not None and not safe(lambda o=o: o.Suppressed, False):
                 out[path] = tuple(_mm(rb.MinPoint) + _mm(rb.MaxPoint))

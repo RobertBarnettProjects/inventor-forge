@@ -77,7 +77,8 @@ def test_edge_filters():
     row = {"type": "line", "length_mm": 20.0, "midpoint_mm": [10, 0, 5]}
     assert B.edge_matches(row, [[0, 0, 5], [20, 0, 5]], plane={"axis": "z", "at": 5})
     assert not B.edge_matches(row, [[0, 0, 5], [20, 0, 6]], plane={"axis": "z", "at": 5})
-    assert B.edge_matches(row, [], box=[0, -1, 0, 20, 1, 10]) and not B.edge_matches(row, [], box=[11, -1, 0, 20, 1, 10])
+    assert B.edge_matches(row, [], box=[0, -1, 0, 20, 1, 10])
+    assert not B.edge_matches(row, [], box=[11, -1, 0, 20, 1, 10])
     assert not B.edge_matches(row, [], type="circle") and not B.edge_matches(row, [], min_length=25)
 
 
@@ -125,3 +126,9 @@ def test_part_two_tools_registered():
                    ("find_edge", "strict"), ("find_face", "body"), ("measure", "body_two"),
                    ("screenshot", "field_mm"), ("screenshot", "target")):
         assert arg in TOOLS[t].schema["properties"], (t, arg)
+
+
+def test_mesh_gap_between_bodies():
+    assert meshio.mesh_gap(cube(), cube(30, 0, 0)) == pytest.approx(20)
+    assert meshio.mesh_gap(cube(), cube(15, 25, 3)) == pytest.approx(((5 ** 2) + (15 ** 2)) ** 0.5)
+    assert meshio.point_triangle_distance((0.5, 0.5, 2), ((0, 0, 0), (1, 0, 0), (0, 1, 0))) == pytest.approx(2)

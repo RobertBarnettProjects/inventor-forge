@@ -1146,7 +1146,8 @@ def peak_location(s: Session, views=("iso", "front", "top", "right", "back", "bo
             f = _unit([t.X - e.X, t.Y - e.Y, t.Z - e.Z])
             up = _unit([u.X, u.Y, u.Z])
             right = _unit([f[1] * up[2] - f[2] * up[1], f[2] * up[0] - f[0] * up[2], f[0] * up[1] - f[1] * up[0]])
-            up = [right[1] * f[2] - right[2] * f[1], right[2] * f[0] - right[0] * f[2], right[0] * f[1] - right[1] * f[0]]
+            up = [right[1] * f[2] - right[2] * f[1], right[2] * f[0] - right[0] * f[2],
+                  right[0] * f[1] - right[1] * f[0]]
             dx, dy = (spot[0] - W / 2) * per_px, (H / 2 - spot[1]) * per_px
             q = [(t.X, t.Y, t.Z)[i] + dx * right[i] + dy * up[i] for i in range(3)]
             origin = [q[i] - f[i] * 1000 for i in range(3)]
@@ -1222,7 +1223,8 @@ def solve_checks(report: dict, warnings: list[str] | None = None) -> list[str]:
 
 def fast_outliers(rows: dict, ratio: float = 0.4) -> list[str]:
     """Cases that solved much faster than the others (a sign that contacts were lost and the model came apart)."""
-    times = sorted(v.get("solve_seconds") for v in rows.values() if v.get("status") == "done" and v.get("solve_seconds"))
+    times = sorted(v.get("solve_seconds") for v in rows.values()
+                   if v.get("status") == "done" and v.get("solve_seconds"))
     if len(times) < 3:
         return []
     median = times[len(times) // 2]

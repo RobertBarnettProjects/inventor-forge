@@ -118,15 +118,23 @@ def extrude(s: Session, distance: float = 10.0, operation: str = "join", directi
             d.AffectedBodies = s.collection(targets)
         return ef.Add(d)
 
-    if direction == "auto":
-        if operation == "cut":
-            feat, used, before = _try_directions(s, "Extrude", make, "negative", "positive")
+    try:
+        if direction == "auto":
+            if operation == "cut":
+                feat, used, before = _try_directions(s, "Extrude", make, "negative", "positive")
+            else:
+                before = s.snapshot()
+                feat, used = make("positive"), "positive"
         else:
             before = s.snapshot()
-            feat, used = make("positive"), "positive"
-    else:
-        before = s.snapshot()
-        feat, used = make(direction), direction
+            feat, used = make(direction), direction
+    except Exception as e:  # noqa: BLE001
+        if not targets or type(e).__name__ != "com_error":
+            raise
+        names = [safe(lambda b=b: b.Name, "") for b in targets]
+        raise InventorError(f"Inventor refused the {operation} on {names}: the profile's extrusion doesn't reach that "
+                            "body (or would leave it unchanged). Check the sketch lies over it and the extent and "
+                            "direction cross it") from e
     out = s.delta(feat.Name, before)
     out.update({"feature": feat.Name, "direction": used, "sketch": sk.Name})
     return _check_targets(s, out, feat, targets, operation)
@@ -140,8 +148,9 @@ def _check_targets(s: Session, out: dict, feat, targets: list, operation: str) -
     names = [safe(lambda b=b: b.Name, "") for b in targets]
     changed = out.get("bodies_changed") or {}
     if not any(n in changed for n in names) and abs(out.get("volume_change_mm3", 0)) < 1e-6:
+        fname = safe(lambda: feat.Name, "the feature")
         safe(lambda: feat.Delete(True, False, False))
-        raise InventorError(f"{feat.Name} changed nothing in {names} (zero volume change), so it was removed again; "
+        raise InventorError(f"{fname} changed nothing in {names} (zero volume change), so it was removed again; "
                             "check the sketch lies over that body and the direction/extent reaches it")
     out["bodies"] = names
     return out
@@ -176,29 +185,28 @@ def revolve(s: Session, axis: str = "Y", angle: float = 360.0, operation: str = 
     return out
 
 
-def _off_face(s: Session, face, centres: list, tol_mm: float = 0.05) -> list:
-    """Centres (2-D on the face's plane, or 3-D) that don't land on the face itself."""
-    from ..com import typed_call
+def _off_face(s: Session, face, centres: list, body=None) -> list:
+    """Centres (2-D on the face's plane, or 3-D) that don't land on the face: just under the face at that spot there
+    must be material and just above it air (the same test that picks the start face)."""
     from .inspect import face_normal as _fn
+    from .inspect import point_inside
     n = _fn(face)
     p0 = face.PointOnFace
     ax = max(range(3), key=lambda i: abs(n[i]))
     rest = [i for i in range(3) if i != ax]
+    solid = safe(lambda: face.Parent) or s.body(body)
+    level = [p0.X, p0.Y, p0.Z]
     bad = []
     for c in centres:
+        q = [0.0, 0.0, 0.0]
         if len(c) >= 3:
-            pt = [float(v) for v in c[:3]]
+            q = [float(v) * MM for v in c[:3]]
         else:
-            pt = [0.0, 0.0, 0.0]
-            pt[rest[0]], pt[rest[1]] = float(c[0]), float(c[1])
-            pt[ax] = [p0.X, p0.Y, p0.Z][ax] * 10
-        try:
-            out = typed_call(face.Evaluator, "GetClosestPointTo", [v * MM for v in pt], [0.0, 0.0, 0.0])
-            q = list(out[-1])
-            dist = math.dist([v * 10 for v in q], pt)
-        except Exception:  # noqa: BLE001
-            continue
-        if dist > tol_mm:
+            q[rest[0]], q[rest[1]] = float(c[0]) * MM, float(c[1]) * MM
+            q[ax] = level[ax]
+        below = [q[i] - n[i] * 0.002 for i in range(3)]
+        above = [q[i] + n[i] * 0.002 for i in range(3)]
+        if point_inside(solid, below) is False or point_inside(solid, above) is True:
             bad.append(c)
     return bad
 
@@ -258,11 +266,12 @@ def hole(s: Session, x: float = 0.0, y: float = 0.0, diameter: float = 10.0, dep
         n = face_normal(face)
         p0 = face.PointOnFace
         centres = points if points else [[x, y]]
-        off = _off_face(s, face, centres)
+        off = _off_face(s, face, centres, tb)
         if off:
-            raise InventorError(f"hole centre(s) {off} don't lie on the start face (face of {safe(lambda: face.Parent.Name, 'the body')}"
-                                f" facing {[round(v, 3) for v in n]}); give face_index for the face they are on, or "
-                                "drill them in separate calls")
+            safe(lambda: sk.Delete())
+            raise InventorError(f"hole centre(s) {off} don't lie on the start face (on "
+                                f"{safe(lambda: face.Parent.Name, 'the body')}, facing {[round(v, 3) for v in n]}); "
+                                "give face_index for the face they are on, or drill them in separate calls")
         pts = []
         for c in centres:
             if len(c) >= 3:

@@ -198,6 +198,7 @@ def test_call_held_by_a_dialog_comes_back_early(monkeypatch):
     f = E.Forge.__new__(E.Forge)
     f.tools, f.pending, f.apartment = TOOLS, None, Apartment("test-sta")
     f._pending_lock = threading.Lock()
+    f.failures = E.FailureMemory()
     f.session = type("S", (), {"pid": 4242, "solver_busy": lambda self: [], "forge": None})()
     f.session.forge = f
     dialog = [{"hwnd": 7, "title": "Inventor", "text": "Sketch not closed", "buttons": ["OK"]}]
@@ -284,7 +285,7 @@ def test_every_declared_write_goes_through_the_gate():
     from inventor_forge.fileargs import WRITES
     for name in WRITES:
         src = inspect.getsource(TOOLS[name].fn)
-        assert "output_path(" in src or "_guard_write(" in src or "save_document(" in src, name
+        assert "output_path(" in src or "guard(" in src or "save_document(" in src, name
 
 
 def test_read_only_mode_blocks_writes_even_from_reading_tools(monkeypatch, tmp_path):

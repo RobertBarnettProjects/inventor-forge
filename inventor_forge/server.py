@@ -20,6 +20,7 @@ from .engine import Forge, tool_enabled
 from .registry import DESTRUCTIVE
 
 PROTOCOL = "2025-06-18"
+GUIDE_URI = "inventor-forge://guide/"
 IMAGE_TOOLS = {"screenshot", "render_sheet"}
 INSTRUCTIONS = (
     "Autodesk Inventor over COM. All lengths mm, angles degrees, forces N, stresses MPa. "
@@ -35,7 +36,10 @@ INSTRUCTIONS = (
     "user has theirs open. "
     "Standards: at the start of a chat call get_standard; if the user hasn't chosen one, ask them once which to work "
     "to (list_standards: AS 1100, ISO, ASME, DIN, BS 8888, JIS, GB), then set_standard. It holds for the rest of the "
-    "session: drawings, fastener and material choices follow it. execute_python is the escape hatch."
+    "session: drawings, fastener and material choices follow it. execute_python is the escape hatch. "
+    "guide(topic) holds the rules learned about Inventor (session, modelling, assemblies, stress-analysis, drawings, "
+    "printing): read the topic before that kind of work. Multi-body parts: give body= to cuts, holes, fillets and "
+    "chamfers. A call that fails the same way twice is not sent a third time: change something first."
 )
 
 
@@ -88,7 +92,7 @@ class Server:
         try:
             if method == "initialize":
                 result = {"protocolVersion": params.get("protocolVersion", PROTOCOL),
-                          "capabilities": {"tools": {"listChanged": False}},
+                          "capabilities": {"tools": {"listChanged": False}, "resources": {}},
                           "serverInfo": {"name": "inventor-forge", "version": __version__},
                           "instructions": INSTRUCTIONS}
             elif method == "tools/list":
@@ -97,8 +101,21 @@ class Server:
                 result = self.tools_call(params.get("name", ""), params.get("arguments") or {})
             elif method == "ping":
                 result = {}
-            elif method in ("resources/list", "prompts/list"):
-                result = {method.split("/")[0]: []}
+            elif method == "resources/list":
+                from . import guides
+                result = {"resources": [{"uri": f"{GUIDE_URI}{k}", "name": f"guide: {k}", "description": v,
+                                         "mimeType": "text/markdown"} for k, v in guides.topics().items()]}
+            elif method == "resources/read":
+                from . import guides
+                uri = str(params.get("uri", ""))
+                try:
+                    text = guides.read(uri[len(GUIDE_URI):] if uri.startswith(GUIDE_URI) else "?")
+                except KeyError:
+                    return {"jsonrpc": "2.0", "id": mid,
+                            "error": {"code": -32602, "message": f"unknown resource {uri}"}}
+                result = {"contents": [{"uri": uri, "mimeType": "text/markdown", "text": text}]}
+            elif method == "prompts/list":
+                result = {"prompts": []}
             else:
                 return {"jsonrpc": "2.0", "id": mid, "error": {"code": -32601, "message": f"unknown method {method}"}}
             return {"jsonrpc": "2.0", "id": mid, "result": result}

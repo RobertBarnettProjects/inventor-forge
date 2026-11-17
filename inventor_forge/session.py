@@ -37,6 +37,28 @@ def restore_environment() -> list[str]:
     return added
 
 
+def body_volume(b) -> float:
+    """A body's volume in mm³ (0 for surfaces)."""
+    v = safe(lambda: b.Volume(0.0001))
+    if v is None:
+        v = safe(lambda: float(b.Volume), 0.0)
+    return round(float(v or 0.0) * CM3_TO_MM3, 3)
+
+
+def body_changes(before: dict, after: dict, tol: float = 1e-3) -> dict:
+    """Per-body volume change (mm³) between two snapshots; new and removed bodies included."""
+    out = {}
+    for name in list(before) + [n for n in after if n not in before]:
+        a, b = before.get(name), after.get(name)
+        if a is None:
+            out[name] = f"new ({b:.0f} mm³)"
+        elif b is None:
+            out[name] = "gone"
+        elif abs(b - a) > tol:
+            out[name] = round(b - a, 3)
+    return out
+
+
 def set_name(obj, name: str, what: str = "item") -> str:
     """Rename and read the name back. Inventor silently keeps the old name when the new one is already used (a body
     named like a feature, for one) or not allowed, so a rename that didn't take is reported, not assumed."""
@@ -60,6 +82,7 @@ class Snapshot:
     faces: int = 0
     edges: int = 0
     bodies: int = 0
+    per_body: dict | None = None          # body name -> volume mm³, for multi-body parts
 
 
 class Session:
@@ -336,28 +359,48 @@ class Session:
             c.Add(f)
         return c
 
-    def body(self, index: int = 1):
+    def body(self, index=1):
+        """A solid body by 1-based index or by name (body names stay with the body as features are added; rename
+        bodies to give them meaningful, stable names). "" or None is the first body."""
         bodies = self.cdef().SurfaceBodies
         if bodies.Count == 0:
             raise InventorError("the part has no solid body yet — sketch a profile and extrude/revolve it")
-        if not 1 <= index <= bodies.Count:
-            raise InventorError(f"body {index} out of range 1..{bodies.Count}")
-        return bodies.Item(index)
+        if index in (None, "", 0, "0"):
+            return bodies.Item(1)
+        if isinstance(index, int) or str(index).strip().isdigit():
+            i = int(index)
+            if not 1 <= i <= bodies.Count:
+                raise InventorError(f"body {i} out of range 1..{bodies.Count} (list_bodies)")
+            return bodies.Item(i)
+        want = str(index).strip().lower()
+        for b in items(bodies):
+            if safe(lambda b=b: b.Name, "").lower() == want:
+                return b
+        raise InventorError(f"no body {index!r}; bodies are {[safe(lambda b=b: b.Name, '?') for b in items(bodies)]}")
 
-    def faces(self) -> list:
-        return list(items(self.body().Faces))
+    def bodies_named(self, spec) -> list:
+        """Bodies for a body= argument: one name or index, a list of them, or "all"."""
+        if spec in (None, ""):
+            return []
+        if isinstance(spec, str) and spec.strip().lower() == "all":
+            return list(items(self.cdef().SurfaceBodies))
+        specs = spec if isinstance(spec, (list, tuple)) else [spec]
+        return [self.body(x) for x in specs]
 
-    def edges(self) -> list:
-        return list(items(self.body().Edges))
+    def faces(self, body=None) -> list:
+        return list(items(self.body(body).Faces))
 
-    def face(self, index: int):
-        fs = self.body().Faces
+    def edges(self, body=None) -> list:
+        return list(items(self.body(body).Edges))
+
+    def face(self, index: int, body=None):
+        fs = self.body(body).Faces
         if not 1 <= int(index) <= fs.Count:
             raise InventorError(f"face {index} out of range 1..{fs.Count} (use list_faces / find_face)")
         return fs.Item(int(index))
 
-    def edge(self, index: int):
-        es = self.body().Edges
+    def edge(self, index: int, body=None):
+        es = self.body(body).Edges
         if not 1 <= int(index) <= es.Count:
             raise InventorError(f"edge {index} out of range 1..{es.Count} (use list_edges / find_edge)")
         return es.Item(int(index))
@@ -418,6 +461,9 @@ class Session:
             s.volume = safe(lambda: self.part().ComponentDefinition.MassProperties.Volume * CM3_TO_MM3, 0.0)
             s.faces = sum(safe(lambda b=b: b.Faces.Count, 0) for b in items(cd.SurfaceBodies))
             s.edges = sum(safe(lambda b=b: b.Edges.Count, 0) for b in items(cd.SurfaceBodies))
+            if s.bodies > 1:
+                s.per_body = {safe(lambda b=b: b.Name, f"body {i}"): body_volume(b)
+                              for i, b in enumerate(items(cd.SurfaceBodies), 1)}
         return s
 
     def delta(self, label: str, before: Snapshot) -> dict:
@@ -430,6 +476,10 @@ class Session:
         quiet = ("thread", "work", "param", "unsuppress", "suppress", "abort", "undo")
         if abs(dv) < 1e-6 and not label.lower().startswith(quiet):
             out["warning"] = "volume did not change — check the feature did what you intended"
+        if before.per_body is not None or after.per_body is not None:
+            changes = body_changes(before.per_body or {}, after.per_body or {})
+            if changes:
+                out["bodies_changed"] = changes
         return out
 
     def area_mm2(self, face) -> float:

@@ -28,6 +28,53 @@ def _plain(v: Any) -> Any:
     return str(v)
 
 
+def _paths(v, out: list) -> None:
+    if isinstance(v, dict):
+        for x in v.values():
+            _paths(x, out)
+    elif isinstance(v, list):
+        for x in v:
+            _paths(x, out)
+    elif isinstance(v, str) and len(v) > 3 and os.path.isabs(v) and os.path.splitext(v)[1]:
+        out.append(v)
+
+
+def compact(res: dict) -> dict:
+    """A shorter result for the compact output mode: file paths that share a folder are given relative to it (the
+    folder is stated once), and a note repeated in every row of a list is kept only in the first."""
+    found: list = []
+    _paths(res, found)
+    base = ""
+    if len(found) >= 2:
+        try:
+            base = os.path.commonpath([os.path.dirname(p) for p in found])
+        except ValueError:
+            base = ""
+
+    def walk(v):
+        if isinstance(v, dict):
+            return {k: walk(x) for k, x in v.items()}
+        if isinstance(v, list):
+            seen = set()
+            rows = []
+            for x in v:
+                x = walk(x)
+                if isinstance(x, dict) and isinstance(x.get("note"), str):
+                    if x["note"] in seen:
+                        x = {k: y for k, y in x.items() if k != "note"}
+                    else:
+                        seen.add(x["note"])
+                rows.append(x)
+            return rows
+        if base and isinstance(v, str) and v in found:
+            return os.path.relpath(v, base)
+        return v
+    out = walk(res)
+    if base:
+        out["folder"] = base
+    return out
+
+
 RPC_BUSY = (-2147418111, -2147417846)     # RPC_E_CALL_REJECTED, RPC_E_SERVERCALL_RETRYLATER
 DEFAULT_WAIT = 1800.0
 DIALOG_GRACE = 12.0       # s a call may run before an Inventor dialog that appeared meanwhile is reported
@@ -123,7 +170,10 @@ class Forge:
                                             "then try again.") from e
                     time.sleep(1.5)
 
+        t_submit = time.time()
+
         def run():
+            t_run = time.time()
             busy = self.session.solver_busy()
             if busy:
                 raise InventorError(f"Inventor is running a solve or report ({busy[0]!r}); calling it now can crash it. "
@@ -153,6 +203,10 @@ class Forge:
                 raise
             self.failures.succeeded()
             res = _plain(out) if isinstance(out, dict) else {"result": _plain(out)}
+            if getattr(self.session, "timings", False):
+                res["timing"] = {"queued_s": round(t_run - t_submit, 3), "inventor_s": round(time.time() - t_run, 3)}
+            if getattr(self.session, "compact", False):
+                res = compact(res)
             if t.mutates:
                 note = safe(lambda: self.session.focus_note(), "")
                 if note:

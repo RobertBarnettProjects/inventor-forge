@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import contextlib
 import glob
+import math
 import os
 import tempfile
 import threading
@@ -768,6 +769,55 @@ def _aim_z_up(s: Session, view: str) -> None:
     cam.ApplyWithoutTransition()
 
 
+def _aim_along(s: Session, direction: list[float], up: str) -> None:
+    """Orthographic camera looking along a direction at the model's centre."""
+    n = math.sqrt(sum(float(c) ** 2 for c in direction)) or 1.0
+    f = [float(c) / n for c in direction]
+    rb = safe(lambda: s.doc().ComponentDefinition.RangeBox)
+    if rb is None:
+        raise InventorError("direction needs a part or assembly with geometry")
+    c = [(getattr(rb.MinPoint, a) + getattr(rb.MaxPoint, a)) / 2 for a in "XYZ"]
+    size = max(getattr(rb.MaxPoint, a) - getattr(rb.MinPoint, a) for a in "XYZ") or 1.0
+    upv = [0, 0, 1] if up == "z" else [0, 1, 0]
+    if abs(sum(upv[i] * f[i] for i in range(3))) > 0.99:
+        upv = [0, 1, 0] if up == "z" else [0, 0, -1]
+    cam = s.view().Camera
+    cam.Perspective = False
+    cam.Target = s.tg.CreatePoint(*c)
+    cam.Eye = s.tg.CreatePoint(*[c[i] - f[i] * size * 4 for i in range(3)])
+    cam.UpVector = s.tg.CreateUnitVector(*upv)
+    cam.Fit()
+    cam.ApplyWithoutTransition()
+
+
+def _frame(s: Session, target: str, center, field_mm: float, width: int, height: int) -> None:
+    """Keep the camera's direction but centre it on a body, component or point, and set the width it shows."""
+    d = s.doc()
+    lo = hi = None
+    if target:
+        if s.kind(d) == "assembly":
+            from .assembly import _occ
+            rb = _occ(s, target).RangeBox
+        else:
+            rb = s.body(target).RangeBox
+        lo, hi = [rb.MinPoint.X, rb.MinPoint.Y, rb.MinPoint.Z], [rb.MaxPoint.X, rb.MaxPoint.Y, rb.MaxPoint.Z]
+    if center:
+        lo = hi = [float(v) * MM for v in center]
+    cam = s.view().Camera
+    cam.Perspective = False
+    e, t = cam.Eye, cam.Target
+    f = [t.X - e.X, t.Y - e.Y, t.Z - e.Z]
+    if lo is not None:
+        c = [(lo[i] + hi[i]) / 2 for i in range(3)]
+        cam.Target = s.tg.CreatePoint(*c)
+        cam.Eye = s.tg.CreatePoint(*[c[i] - f[i] for i in range(3)])
+    w_cm = float(field_mm) * MM if field_mm else (max(hi[i] - lo[i] for i in range(3)) * 1.25 if lo is not None and
+                                                  lo is not hi else 0.0)
+    if w_cm > 0:
+        cam.SetExtents(w_cm, w_cm * height / max(width, 1))
+    cam.ApplyWithoutTransition()
+
+
 _CONSTRUCTION = ("Sketches", "Sketches3D", "SketchDimensions", "UserWorkPlanes", "UserWorkAxes", "UserWorkPoints",
                  "OriginWorkPlanes", "OriginWorkAxes", "OriginWorkPoints", "ConstructionSurfaces")
 
@@ -794,7 +844,8 @@ def _restore_construction(d, was: dict) -> None:
 
 @tool("view", mutates=False)
 def screenshot(s: Session, path: str = "", view: str = "", width: int = 1600, height: int = 1000,
-               views: str = "", up: str = "y", clean: bool = True) -> dict:
+               views: str = "", up: str = "y", clean: bool = True, target: str = "", center: list[float] | None = None,
+               field_mm: float = 0.0, direction: list[float] | None = None) -> dict:
     """Save a PNG of the active document's view (model or drawing sheet) — look at it to check your work. Each
     image comes with its scale (mm per pixel) so sizes on it can be read off. With views, one PNG per orientation
     in a single call, and the user's camera is put back afterwards.
@@ -803,17 +854,27 @@ def screenshot(s: Session, path: str = "", view: str = "", width: int = 1600, he
     views: several orientations at once, e.g. "iso,front,top,right" (path is then a folder or a name prefix)
     up: "y" (Inventor's convention) or "z" for models built Z-up, such as parts laid out on a 3D printer's bed:
         top then looks down Z and iso has Z pointing up
-    clean: hide sketches, work planes/axes/points and the origin while the picture is taken (put back after)
+    clean: hide sketches, work planes/axes/points and the origin while the picture is taken (put back after; the
+      document's saved/unsaved state is kept)
+    target: frame this body (part) or component (assembly) by name instead of the whole model
+    center: [x, y, z] mm to frame instead (a detail)
+    field_mm: width of the picture in model mm (orthographic), e.g. 20 for a close-up of a detail
+    direction: [x, y, z] direction the camera looks along (overrides view), e.g. [0, 0, -1] looks down
     """
     up = (up or "y").strip().lower()
     if up not in ("y", "z"):
         raise InventorError("up must be 'y' or 'z'")
     if clean and s.kind(s.doc()) != "drawing":
-        hidden = _hide_construction(s.doc())
+        d0 = s.doc()
+        was_dirty = safe(lambda: bool(d0.Dirty), None)
+        hidden = _hide_construction(d0)
         try:
-            return screenshot(s, path=path, view=view, width=width, height=height, views=views, up=up, clean=False)
+            return screenshot(s, path=path, view=view, width=width, height=height, views=views, up=up, clean=False,
+                              target=target, center=center, field_mm=field_mm, direction=direction)
         finally:
-            _restore_construction(s.doc(), hidden)
+            _restore_construction(d0, hidden)
+            if was_dirty is False and safe(lambda: bool(d0.Dirty), False):
+                safe(lambda: setattr(d0, "Dirty", False))      # a picture is not a change to the model
     if views:
         wanted = [w.strip() for w in views.split(",") if w.strip()]
         v = s.view()
@@ -837,17 +898,22 @@ def screenshot(s: Session, path: str = "", view: str = "", width: int = 1600, he
                 p_ = (os.path.join(base, f"view-{w}.png") if is_dir else
                       (base[:-4] if base.lower().endswith(".png") else base) + f"-{w}.png")
                 shots.append({"view": w, **screenshot(s, path=p_, view=w, width=width, height=height, up=up,
-                                                        clean=False)})
+                                                        clean=False, target=target, center=center,
+                                                        field_mm=field_mm)})
         finally:
             if keep is not None:
                 safe(lambda: (setattr(cam, "Eye", keep[0]), setattr(cam, "Target", keep[1]),
                               setattr(cam, "UpVector", keep[2]), setattr(cam, "Perspective", keep[3]),
                               cam.ApplyWithoutTransition()))
         return {"images": shots}
-    if view and up == "z" and s.kind(s.doc()) != "drawing":
+    if direction and s.kind(s.doc()) != "drawing":
+        _aim_along(s, direction, up)
+    elif view and up == "z" and s.kind(s.doc()) != "drawing":
         _aim_z_up(s, view.strip().lower())
     elif view:
         set_view(s, view=view)
+    if (target or center or field_mm) and s.kind(s.doc()) != "drawing":
+        _frame(s, target, center, field_mm, int(width), int(height))
     v = s.view()
     if v is None:
         raise InventorError("no active view to capture")

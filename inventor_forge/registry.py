@@ -109,5 +109,6 @@ def tool(group: str, name: str | None = None, mutates: bool = True, com: bool = 
 
 
 def load_all() -> dict[str, Tool]:
-    from .tools import assembly, docs, drawing, features, fea, inspect as _inspect, parametric, sheetmetal, sketch, standard, studies, system  # noqa: F401
+    from .tools import (assembly, build, docs, drawing, features, fea, inspect as _inspect, parametric,  # noqa: F401
+                        printing, sheetmetal, sketch, standard, studies, system)
     return TOOLS

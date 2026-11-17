@@ -1,12 +1,12 @@
 # inventor-forge tools
 
-177 tools. Lengths mm, angles degrees, forces N, stresses MPa.
+202 tools. Lengths mm, angles degrees, forces N, stresses MPa.
 
 ## Session
 
 | Tool | What it does | Arguments |
 |---|---|---|
-| `connect` | Attach to the running Inventor (or start it) and report the version, project and open documents. | `private` |
+| `connect` | Attach to the running Inventor (or start it) and report the version, project and open documents. The session stays pinned to that Inventor's process: if it closes, calls are refused instead of moving to another Inventor. Checks the state it finds: the active project, documents that already have unsaved changes, and free disk space. | `private`, `reattach`, `expect_project`, `ignore_checks` |
 | `close_private_inventor` | Close the separate Inventor started by connect(private=true), discarding anything unsaved in it. Never touches an Inventor this session did not start. |  |
 | `list_projects` | Inventor projects known to this machine and which one is active. |  |
 | `set_active_project` | Switch Inventor's active project (by name or .ipj path). Inventor only allows this with no documents open. The active project is a per-user setting shared by every Inventor on the PC, so this refuses while another Inventor is running (its open files would start resolving against the new project). | `project`*, `other_inventors_ok` |
@@ -24,18 +24,21 @@
 | `create_assembly` | New metric assembly document and make it active. | `name` |
 | `open_document` | Open an Inventor file (.ipt .iam .idw .dwg) or import STEP/IGES/SAT, and activate it. Opens in Inventor's silent mode, so a file outside the active project, or with missing references, can't stop at a prompt. | `path`* |
 | `activate_document` | Bring an open document to the front by display name, file name or path. | `name`* |
-| `save_document` | Save the active document; with a path, Save As (folders are created). Relative paths go under ~/Documents/inventor-forge. | `path` |
+| `save_document` | Save the active document and the changed documents it uses, without any dialog (Inventor's silent mode takes the default answer, so a "save the parts too?" prompt can't hold the session). With a path, Save As (folders are created); a path that is the document's own file saves in place. Relative paths go under ~/Documents/inventor-forge. The documents to be written are listed in the result. | `path`, `list_only`, `supersede` |
 | `close_document` | Close the active (or named) document. Unsaved changes are discarded unless save=true. | `save`, `name` |
 | `export_document` | Export a copy of the active document: STEP, IGES, STL, SAT, Parasolid (X_T), OBJ, JT, 3MF, PDF/DWG/DXF (drawings), PNG/JPG (picture of the view). Format comes from the extension if omitted. | `path`*, `format` |
 | `close_unused_documents` | Close documents Inventor holds in the background (no window, nothing referencing them) — e.g. parts loaded for a drawing that was closed. Frees their files for save_document. Never touches documents with a window. |  |
 | `referenced_files` | The active document's file and every file it depends on (parts of an assembly, the model of a drawing). |  |
+| `export_capabilities` | The file formats this Inventor can export to: each translator's name, extensions, whether it is loaded and licensed, and which document types it saves from. With extension, just that one, with its default options. | `extension` |
+| `export_print_package` | Export a part or assembly for 3D printing in one go: the native file, STL, 3MF and STEP, all in millimetres. Everything is written to temporary files first and checked; only when every requested file is good are they moved into place, so a failing translator never removes the last good file. Each mesh is checked: triangles, separate shells (should equal the number of solid bodies), open edges, exact extents, volume and the area lying flat on the bed. When Inventor's 3MF translator is missing or refuses, a millimetre 3MF is written from the STL mesh instead, and the result says so. | `folder`, `name`, `formats`, `resolution`, `save_first` |
 
 ## View
 
 | Tool | What it does | Arguments |
 |---|---|---|
 | `set_view` | Orient the active 3D view: iso, iso_left, iso_bottom, front, back, top, bottom, left, right, home. | `view`, `fit` |
-| `screenshot` | Save a PNG of the active document's view (model or drawing sheet) — look at it to check your work. Each image comes with its scale (mm per pixel) so sizes on it can be read off. With views, one PNG per orientation in a single call, and the user's camera is put back afterwards. | `path`, `view`, `width`, `height`, `views`, `up`, `clean` |
+| `set_display` | Visual style (shaded, shaded with edges, wireframe...) and where it is set. "view" changes only the window on screen (nothing is stored); "document" stores it as the document's style for new windows (saved with the file); "application" changes Inventor's application options, which are shared by every Inventor this Windows user runs and written back when each one exits. With no mode, reports the current setting at each level. | `mode`, `scope`, `shared_ok` |
+| `screenshot` | Save a PNG of the active document's view (model or drawing sheet) — look at it to check your work. Each image comes with its scale (mm per pixel) so sizes on it can be read off. With views, one PNG per orientation in a single call, and the user's camera is put back afterwards. | `path`, `view`, `width`, `height`, `views`, `up`, `clean`, `target`, `center`, `field_mm`, `direction` |
 
 ## Sketch
 
@@ -63,13 +66,15 @@
 
 | Tool | What it does | Arguments |
 |---|---|---|
+| `parametric_profile` | A closed profile of lines, arcs and circles, every point driven by parameter expressions and dimensioned from the origin (so the sketch is fully constrained and edits through parameters reshape it), then extruded or revolved in the same call. Loops: the first is the outline, others holes or islands. | `plane`*, `loops`*, `operation`, `extrude`, `symmetric`, `revolve_axis`, `angle`, `name`, `body` |
+| `batch` | Run several modelling steps (parameters, sketches, features, selections) in one call and one undo step, in order. A step's output can feed a later one: "$name.key" refers to the output of the step named name, e.g. {"tool": "select_edges", "as": "top", "args": {"plane": {"axis": "z", "at": 10}}} then {"tool": "fillet", "args": {"radius": 2, "edges": "$top.edges"}}. On the first failure everything is rolled back (unless rollback=false) and the failed step, its tool and the error are reported. Returns a short log with each step's key results and time. | `steps`*, `rollback` |
 | `repair_import` | Check an imported part (STEP, IGES...): how many bodies are solid and how many are open surfaces (no volume, so no mass and no booleans), and the smallest faces (slivers). With fix, knit the surfaces into one body and report whether it closed into a solid. | `fix`, `tolerance` |
-| `extrude` | Extrude the active sketch's closed profile(s) — all closed regions, inner loops become holes. | `distance`, `operation`, `direction`, `through_all`, `taper`, `sketch_index` |
+| `extrude` | Extrude the active sketch's closed profile(s) — all closed regions, inner loops become holes. | `distance`, `operation`, `direction`, `through_all`, `taper`, `sketch_index`, `body` |
 | `revolve` | Revolve the active sketch's profile about an axis. | `axis`, `angle`, `operation`, `sketch_index` |
-| `hole` | Drilled, tapped, counterbored or countersunk hole(s), placed by model coordinates. | `x`, `y`, `diameter`, `depth`, `points`, `face_index`, `axis`, `tap`, `tap_class`, `cbore_diameter`, `cbore_depth`, `csink_diameter`, `csink_angle`, `use_sketch_points` |
+| `hole` | Drilled, tapped, counterbored or countersunk hole(s), placed by model coordinates. | `x`, `y`, `diameter`, `depth`, `points`, `face_index`, `axis`, `tap`, `tap_class`, `cbore_diameter`, `cbore_depth`, `csink_diameter`, `csink_angle`, `use_sketch_points`, `body` |
 | `hole_linear` | Hole on a planar face positioned by distances from two of its edges (Inventor's linear placement). | `face_index`*, `edge_one`*, `distance_one`*, `edge_two`*, `distance_two`*, `diameter`, `depth`, `tap` |
-| `fillet` | Constant-radius fillet on edges (1-based indices from list_edges / find_edge). | `radius`*, `edges`* |
-| `chamfer` | Chamfer edges: equal distance, two distances, or distance + angle (needs face_index for the reference face of the last two forms). | `distance`*, `edges`*, `distance_two`, `angle`, `face_index` |
+| `fillet` | Constant-radius fillet on edges (1-based indices from list_edges / find_edge). | `radius`*, `edges`*, `body` |
+| `chamfer` | Chamfer edges: equal distance, two distances, or distance + angle (needs face_index for the reference face of the last two forms). | `distance`*, `edges`*, `distance_two`, `angle`, `face_index`, `body` |
 | `circular_pattern` | Circular pattern of features (names or 1-based indices) about an axis (X/Y/Z or work axis name). | `features`*, `count`, `angle`, `axis` |
 | `rectangular_pattern` | Rectangular (grid) pattern of features along two axes; spacing in mm (negative flips the direction). | `features`*, `x_count`, `x_spacing`, `y_count`, `y_spacing`, `x_axis`, `y_axis` |
 | `mirror` | Mirror features (names / indices) across a plane (XY, XZ, YZ or work plane name). | `features`*, `plane` |
@@ -79,6 +84,7 @@
 | `loft` | Loft through the closed profiles of two or more sketches (1-based indices, in order). | `sketches`*, `operation` |
 | `work_plane` | Work plane offset from a base plane (mm), or rotated about an axis by an angle (degrees). | `base`, `offset`, `angle`, `axis`, `name` |
 | `work_axis` | Work axis through a cylindrical face's axis or along a straight edge (for patterns/revolves). | `face_index`, `edge_index`, `name` |
+| `rename` | Rename a feature, body, sketch, work plane, work axis, user parameter or assembly component, and read the name back: Inventor silently ignores names that are already used (a body named like a feature) or not allowed. | `kind`*, `target`*, `new_name`* |
 | `list_features` | Feature tree: index, name, type, suppressed, health. |  |
 | `delete_feature` | Delete features by name or 1-based index (dependent features go too). | `features`*, `keep_sketches` |
 | `suppress_feature` | Suppress (or unsuppress) a feature without deleting it — handy for what-if checks. | `feature`*, `suppress` |
@@ -91,36 +97,41 @@
 | `frame_members` | A welded box-section frame in one step, from member centre lines in the XY plane: every member becomes a width x height bar, all joined into one solid; wall > 0 then hollows it into tube of that wall thickness (do this before adding pads and brackets, which should stay solid). Returns a cut list: each member's centre-line length, its end angles (between the cut face and the member's axis: 90 = square cut, 45 = mitred corner) and the stock length to cut. | `members`*, `width`, `height`, `wall`, `z`, `name` |
 | `tube_frame` | A welded round-tube (CHS) frame in 3D, in one step: each member is a straight tube on a centre line [x1, y1, z1, x2, y2, z2] (mm). All members are swept solid and joined, then bored to the wall thickness, so joints are welded and tee'd tubes are coped into their neighbours. Ends that meet another member's end (corners) run on by half a diameter so the corner closes. Use real sizes (e.g. AS/NZS 1163 CHS 33.7x2.6, 26.9x2.3). Returns centreline lengths and untrimmed axial blank lengths including corner run-ons. Tee blanks reach the host centreline for subsequent coping. Stock lengths use the constructed sweep extents. | `members`*, `od`, `wall`, `name` |
 | `parametric_extrusion` | A closed profile whose every corner is driven by parameter expressions, extruded to a parametric width. The sketch comes out fully constrained, so changing a parameter (or a linked master) reshapes the part reliably. | `plane`*, `vertices`*, `width`*, `name`, `operation`, `symmetric` |
-| `split_faces` | Split faces along sketch lines, without changing the solid: for example to load only a patch of a face in an analysis. The sketch doesn't have to be on the face. | `sketch`, `faces` |
+| `split_faces` | Split faces along sketch lines, without changing the solid: for example to load only a patch of a face in an analysis. The sketch doesn't have to be on the face. Inventor refuses a sketch itself as the splitting tool, so the lines are turned into one of: paths (one split per line), a hidden work surface extruded from the sketch through the part (one split for a whole outline, curves included), or work planes through each straight line square to the sketch (each plane splits right across the face). A plate placed turned over shows its other face: split both. | `sketch`, `faces`, `tool` |
 
 ## Inspect
 
 | Tool | What it does | Arguments |
 |---|---|---|
 | `inspect` | Part summary: volume, surface area, bounding box, face/edge counts, features, mass, material. |  |
-| `list_faces` | Face table: index, type (plane/cylinder/...), area, centroid, outward normal or diameter/axis, and hole=true for concave cylinders. Indices are what fillet/shell/hole/FEA tools take. | `min_area`, `type`, `max_count` |
-| `list_edges` | Edge table: index, type (line/circle/arc...), length, midpoint, diameter/centre for circles. | `min_length`, `type`, `max_count` |
-| `find_edge` | Edge(s) whose midpoint is nearest (x, y, z) mm — omitted coordinates are ignored. Returns the best match plus any others within tolerance. | `x`, `y`, `z`, `type`, `tolerance` |
-| `find_face` | Face nearest a point (centroid distance) and/or best aligned with an outward normal. | `x`, `y`, `z`, `normal`, `type`, `min_area` |
+| `list_faces` | Face table: index, type (plane/cylinder/...), area, centroid, outward normal or diameter/axis, and hole=true for concave cylinders. Indices are what fillet/shell/hole/FEA tools take (per body). | `min_area`, `type`, `max_count`, `body` |
+| `list_edges` | Edge table: index, type (line/circle/arc...), length, midpoint, diameter/centre for circles. For picking a few edges, select_edges filters on the server and returns only their indices. | `min_length`, `type`, `max_count`, `body` |
+| `find_edge` | Edge(s) whose midpoint is nearest (x, y, z) mm — omitted coordinates are ignored. Returns the best match plus any others within tolerance. body="all" searches every body of a multi-body part and says which body the edge is on (indices are per body). | `x`, `y`, `z`, `type`, `tolerance`, `body`, `strict` |
+| `find_face` | Face nearest a point (centroid distance) and/or best aligned with an outward normal. | `x`, `y`, `z`, `normal`, `type`, `min_area`, `body` |
 | `mass_properties` | Mass, volume, area, centre of gravity and inertia (about the CoG-aligned global axes and principal) of the active part or assembly, using its assigned material(s). |  |
-| `measure` | Minimum distance (and angle between planar faces) for two faces, two edges, or a face and an edge. | `face_one`, `face_two`, `edge_one`, `edge_two` |
+| `measure` | Minimum distance (and angle between planar faces) for two faces, two edges, or a face and an edge. In a multi-body part each entity can come from its own body. | `face_one`, `face_two`, `edge_one`, `edge_two`, `body_one`, `body_two` |
 | `face_at_point` | The face a point (mm) lies on — for references picked in a viewer. Unlike find_face (nearest face centre) this checks the surface itself, and says when the point is on an edge shared by two faces. | `x`*, `y`*, `z`*, `tolerance` |
+| `select_edges` | Edge indices that pass filters, chosen on the server, so only the answer comes back (not a table of every edge): edges lying in a plane, inside a box, bounding a face, of a type, length or diameter. Indices are per body. | `type`, `plane`, `box`, `of_face`, `min_length`, `max_length`, `diameter`, `tolerance`, `body`, `samples` |
+| `select_faces` | Face indices that pass filters, chosen on the server: type, outward normal, lying in a plane, centroid inside a box, area, cylinder diameter. Returns indices and counts only (samples adds a few full rows). | `type`, `normal`, `plane`, `box`, `min_area`, `diameter`, `tolerance`, `body`, `samples` |
 | `name_face` | Give a face a name that stays with it when indices change (the same names as Inventor's Assign Name). | `face`*, `name`* |
 | `find_named_face` | Current face index (for list_faces and the analysis tools) of a named face. | `name`* |
 | `list_named_faces` | Every named face of the part and its current index. |  |
+| `list_bodies` | The bodies of a part with their names (stable as features are added; give meaningful ones with rename), index, solid or surface, volume, range box and face/edge counts. Name a body in body= arguments. |  |
+| `body_gap` | Clearance between two bodies of one part (print-in-place parts, snap fits): the smallest gap in mm, or the volume they overlap by when they clash. | `body_one`*, `body_two`* |
+| `pose_bodies` | Try the bodies of a part in another arrangement (a print-in-place mechanism opened, a hinge turned) without changing the part: copies are moved, every pair is checked for overlap and clearance, and with path a picture of the posed copies is saved. The saved build pose is never touched. | `moves`*, `path`, `view`, `up`, `reference_box` |
 
 ## Parameters
 
 | Tool | What it does | Arguments |
 |---|---|---|
 | `get_parameters` | Model (dimension) and user parameters with expressions and values (lengths in mm, angles in deg). | `user_only` |
-| `set_parameter` | Set a parameter's expression (e.g. "40 mm", "d0 * 2", "Thickness + 2") and rebuild. | `name`*, `expression`* |
+| `set_parameter` | Set a parameter's expression (e.g. "40 mm", "d0 * 2", "Thickness + 2") and rebuild. Reports every body (part) or component (assembly) whose range box moved or changed size, so knock-on effects of a parameter that other features hang off are visible before analysis or drawings. | `name`*, `expression`* |
 | `add_parameter` | Add a user parameter (units: mm, deg, ul for unitless, kg, N, MPa...). | `name`*, `expression`*, `units`, `comment` |
 | `list_dimensions` | Driving sketch dimensions (all sketches, or one) with the parameter that controls each. | `sketch_index` |
 | `edit_dimension` | Change a dimension by its parameter name (d0, d1 ... from list_dimensions) and rebuild. | `parameter`*, `value`* |
 | `link_parameters` | Link user parameters from another Inventor file (a master part) into this part or assembly, so one file drives them all. Linking the same file again adds any new names to the existing link. | `source`*, `names` |
 | `list_model_states` | Model states of the active part or assembly (variants of one file, e.g. with different features suppressed). |  |
-| `add_model_state` | Add a model state. While it is active, suppressing features or changing parameters only affects that state. | `name`*, `activate` |
+| `add_model_state` | Add a model state. Inventor copies the active state into it, suppression included, so say explicitly what the new state suppresses: list every feature (part) or component (assembly) that must be off, and anything copied in suppressed that must be on. While a state is active, suppressing features or changing parameters only affects it. | `name`*, `activate`, `suppress`, `unsuppress` |
 | `activate_model_state` | Switch the active part or assembly to a model state. | `name`* |
 
 ## Properties
@@ -154,7 +165,7 @@
 
 | Tool | What it does | Arguments |
 |---|---|---|
-| `place_component` | Place a part/assembly file (or an open document by name) into the active assembly at (x, y, z) mm, optionally rotated about X/Y/Z by rotate_angle degrees. The first component is usually grounded. | `path`*, `x`, `y`, `z`, `rotate_axis`, `rotate_angle`, `grounded` |
+| `place_component` | Place a part/assembly file (or an open document by name) into the active assembly at (x, y, z) mm, optionally rotated about X/Y/Z by rotate_angle degrees. The first component is usually grounded. In an assembly with several model states the component is added to every state (Inventor otherwise adds it to the active one only). | `path`*, `x`, `y`, `z`, `rotate_axis`, `rotate_angle`, `grounded` |
 | `add_constraint` | Assembly constraint between two components (or a component and the assembly origin). | `type`*, `occurrence_one`*, `entity_one`*, `occurrence_two`*, `entity_two`*, `offset`, `angle`, `opposed`, `offset_expression` |
 | `ground_component` | Ground (fix in place) or unground a component. | `occurrence`*, `grounded` |
 | `move_component` | Move a (non-grounded, unconstrained) component's origin to (x, y, z) mm. | `occurrence`*, `x`*, `y`*, `z`* |
@@ -165,12 +176,14 @@
 | `bill_of_materials` | Parts-only BOM: item, quantity, part number, description, material, mass; optional CSV export. | `csv_path` |
 | `pattern_component` | Circular (angle = degrees between copies) or linear (linear=true, spacing in mm) pattern of components along an assembly origin axis X/Y/Z. | `occurrences`*, `axis`, `count`, `angle`, `linear`, `spacing` |
 | `sweep_clearance` | Drive an angle or offset constraint through a range and, at every step, check for clashes and the smallest gap between the moving component and the rest: hinges, levers, steering, sliders. The constraint is put back to where it was afterwards. Gives the first value where parts collide and the tightest clearance. | `constraint`*, `start`*, `stop`*, `steps`, `moving`, `against` |
+| `copy_assembly` | Copy the active (saved) assembly and every file it uses from its own folder tree into a new folder, renaming the files with a prefix, then point every reference in the copies at the copied files and check that none still leads back. References are read from the files themselves, so parts used only in model states that aren't active are copied and repointed too (Inventor's Save As leaves those linked to the originals without saying so). Files outside the source folder (library and Content Center parts) stay shared. Stress Analysis results files are not copied: solve the copies again. Contact types are compared before and after the repoint, because a replaced reference can drop contacts that automatic contacts then recreate as Bonded. The source assembly is closed first (it must have no unsaved changes) and the copy is left open. | `folder`*, `prefix`, `old_prefix`, `source_root`, `check_contacts` |
 | `set_component_model_state` | Show a component in the assembly in one of its model states. | `occurrence`*, `state`* |
 
 ## Drawing
 
 | Tool | What it does | Arguments |
 |---|---|---|
+| `set_title_area` | Tell the drawing tools where the title block is when the template draws it in the border (so the sheet has no title block object to measure): layout, the parts list, notes, the projection symbol and QA keep clear of this box as they do of a real title block. Sheet mm from the lower-left corner. | `x0`*, `y0`*, `x1`*, `y1`*, `this_sheet_only` |
 | `create_drawing` | New drawing document to a drafting standard: the template, projection angle and dimension style follow it. | `standard`, `sheet_size`, `orientation`, `name` |
 | `add_sheet` | Add a sheet to the drawing (with the template's border and title block) and make it active. | `sheet_size`, `orientation`, `name` |
 | `activate_sheet` | Activate a sheet by name or 1-based index. | `sheet`* |
@@ -205,6 +218,12 @@
 | `check_drawing` | QA of every sheet: views overlapping each other / the title block / the sheet edge, views with no dimensions, empty title-block fields, missing parts list or balloons on assemblies. Ends with TOTAL ISSUES: N — aim for 0, then render_sheet and look. |  |
 | `render_sheet` | PNG of the active sheet (look at it before exporting). | `path`, `width` |
 | `export_pdf` | Export the drawing (all sheets by default) to PDF, vector, black lines. | `path`*, `all_sheets` |
+| `set_prompted_fields` | Fill the prompted entries of the template's border and title block on every sheet (a new drawing made from a template doesn't carry the template's values). Names are the prompts as the template defines them. | `fields`*, `all_sheets` |
+| `set_sheet_format` | Replace the title block and/or border on the active sheet (or every sheet) with definitions from the drawing's resources (e.g. a company template's), filling their prompted entries. Prompt values go to Inventor as a typed string array in the definition's own prompt order; prompts not given are left empty. | `title_block`, `border`, `prompts`, `all_sheets` |
+| `set_dimension_precision` | Set the number of decimals shown on drawing dimensions. Dimensions to sloped or chamfered ends pick up values such as 195.88 that should read 196: by default only dimensions whose value isn't a whole number and that attach to a line that isn't horizontal or vertical on the sheet are changed. | `indices`, `precision`, `sloped_only` |
+| `supersede_drawing` | Before rebuilding a drawing that people may have edited: read where its notes and sketched symbols sit now (positions moved by hand are kept by apply_positions on the rebuilt sheet), then move the file into a Superseded folder beside it so the rebuild can be saved under the same name. The old file is never deleted. | `path`* |
+| `apply_positions` | Put notes and sketched symbols of the rebuilt drawing where they were in the superseded one (the positions supersede_drawing returned), matched by sheet name and by their text or symbol and prompt values. | `positions`* |
+| `hide_components_in_views` | Hide components in every view of an assembly drawing: bodies that exist only for analysis (weld bodies, ground pads) aren't fabricated parts and mustn't show. Components are matched by exact name, or by the start of their name with prefixes (e.g. ["FW_", "Pad_"]). | `names`, `prefixes`, `all_sheets` |
 
 ## Analysis
 
@@ -221,17 +240,21 @@
 | `copy_study` | Copy a study, keeping its faces, supports and loads, so no faces need picking. Returns the copy's own load parameters, in the same order as the original's values (set them with set_analysis_parameters). Inventor renumbers every load parameter when it copies a study; the copy's ones are found by matching values. | `source`*, `new_name` |
 | `list_analysis_parameters` | Every Stress Analysis load value in this document: the sa_N parameters, in creation order (forces in N as X, Y, Z triples; gravity in mm/s^2). |  |
 | `set_analysis_parameters` | Change Stress Analysis load values directly, with no dialog. The affected study needs solving again. | `values`* |
-| `read_result_maximum` | Peak value of a solved study's result, without generating a report (seconds, against minutes for a file with many studies). Gives peaks only; use study_report for reactions and full results. | `study`*, `result` |
+| `read_result_maximum` | Peak value of a solved study's result, without generating a report (seconds, against minutes for a file with many studies). Gives peaks only; use study_report for reactions and full results. With locate, also where the peak is: the model is rendered from several directions and the top-colour patch traced back onto it (component, face and an approximate point), because a peak's value means little until it is known whether it sits on a singularity. | `study`*, `result`, `locate` |
 | `show_result` | Show a solved study's result in Inventor and save a picture of it. | `study`*, `result`, `view` |
 | `set_result_colors` | Change how Inventor colours a solved study's result: a fixed scale (say, ending at yield so anything red is over it), greyscale, or back to automatic. No mouse needed. Returns a picture. A manual maximum stops read_result_maximum reading the true peak until auto is set again. | `study`*, `result`, `maximum`, `minimum`, `gray`, `auto`, `view` |
 | `result_at_point` | A solved result's value at one spot — the middle of a face, or a point on it — for example the stress a short way from a sharp corner whose peak is a singularity. Inventor has no API for this, so the value is read off the screen: the colour scale's top is moved until that spot just reaches the top colour. Inventor comes to the front and the pointer is moved out of the way, so this needs user_notified=true like the analyses. | `study`*, `face`*, `result`, `point`, `tolerance`, `user_notified` |
 | `mesh_convergence` | Check that a study's peak doesn't depend on the mesh: copies it at finer average element sizes, solves each and compares the peaks. No mouse needed. (analyze_stress's refinements= uses Inventor's own refinement instead.) Each size is solved, which is the only check that catches a degenerate element: Inventor meshes such a model without complaint and reports it at solve time, so a mesh preview alone can't vet a model. | `study`*, `fractions`, `result`, `timeout` |
 | `refresh_analysis_display` | Clear arrows and labels left on screen from other studies by leaving Stress Analysis and coming back. Save first: switching environments repeatedly has been linked to an Inventor crash. |  |
-| `solve_study` | Solve an existing study, with no mouse or keyboard use. Don't use Inventor until it returns; solver warnings are returned. | `study`*, `timeout` |
+| `solve_study` | Solve an existing study, with no mouse or keyboard use. Don't use Inventor until it returns; solver warnings are returned. A study whose inputs (geometry, every parameter including load values, and its constraints, loads, contacts and mesh settings) are the same as at its last solve here, and which still has results, is not solved again. At most two solves run on the PC at once. | `study`*, `timeout`, `skip_unchanged` |
 | `study_report` | Generate Inventor's report and read one study from it: summary, reactions (the way to get reactions; Inventor's Reaction Forces dialog crashes it), loads, material. A full report covers every study, which takes many minutes on a file with several and has crashed Inventor on very large ones. | `study`, `name`, `only_this_study`, `user_notified` |
 | `run_study_cases` | Run a table of load cases from one template study, with no mouse or keyboard. Each case copies the template, writes its load values, solves, reads the peaks and saves the file. Finished cases are recorded, so after a crash the same call carries on where it stopped; in a private Inventor (connect(private=true)) a crashed Inventor is restarted and the run continues by itself. A case that fails on its own (a degenerate mesh, values Inventor didn't keep) is recorded as failed with the reason and the sweep goes on; calling again retries only the failed and unrun cases. Save the document first, and keep runs short: long Inventor sessions are the usual cause of crashes. | `template`*, `cases`*, `results_path`, `results`, `timeout` |
 | `delete_study_item` | Delete a whole study, or one constraint or load inside it. This can't be undone. To move a load to other faces, delete it and add it again: picking in an edit dialog adds faces. | `study`*, `item` |
 | `solve_state` | What every running Inventor is doing, read from Windows only (window titles, CPU, memory), so it is safe during a solve and while another session is using Inventor. Call it twice a few seconds apart: rising CPU means still working. |  |
+| `list_contacts` | A study's contacts read back: each with its type, the contacts of every component, components with none (not attached to anything: the solve would fail or the part float), and contacts between components that no longer touch (left over from an earlier geometry). Check this after every contact change and before solving. | `study`* |
+| `update_contacts` | After the geometry changed (parts added, moved or resized): mesh the study again from the current geometry, then generate automatic contacts, and list them back per component. Automatic contacts use the last mesh, so without the new mesh added parts get no contacts at all. With delete_stale, contacts between components that no longer touch are deleted (each one is measured first and every deletion is listed). No mouse needed. | `study`*, `delete_stale` |
+| `analysis_storage` | How much disk the open model's Stress Analysis meshes and results take (kept beside the model until the studies are deleted, and copied again with every Save As or file copy of the model), with the studies they belong to. |  |
+| `purge_studies` | Delete every study not in keep, with its mesh and results, then save, to shrink a model before copying it or to drop superseded load cases. Without confirm, only lists what would go. This can't be undone. | `keep`*, `confirm` |
 
 ## System
 
@@ -245,6 +268,8 @@
 | `get_standard` | The standard chosen for this session, or chosen=false if the user hasn't been asked yet. |  |
 | `execute_python` | Run Python in a persistent namespace with the live Inventor objects: app, doc, cdef (component definition or None), tg (TransientGeometry), to (TransientObjects), K (all Inventor enum constants), items(collection), typed_call(obj, method, ...) for [out]-parameter methods, MM (=0.1, mm->cm). Inventor API units are cm and radians. The value of a final expression is returned; print() output too. Use it for anything the dedicated tools don't cover. Every snippet is logged (time, SHA-256, outcome) to execute_python.log in the workdir. | `code`*, `undo_on_error` |
 | `reload_api` | Reload the tool modules from disk (after editing them) without restarting the server. |  |
+| `set_output` | How results come back for the rest of the session. compact: file paths that share a folder are given once relative to it, and repeated notes are dropped. timings: each result says how long it waited for Inventor and how long Inventor took. | `compact`, `timings` |
+| `guide` | Short reference notes on how Inventor behaves and the rules that keep work safe, one topic at a time: session (working alongside the user, hangs, COM binding, unattended runs), modelling, assemblies, stress-analysis, drawings, printing. With no topic, lists the topics. Read the relevant one before starting that kind of work. | `topic` |
 | `list_tools` | Tool names by group (session, documents, sketch, features, inspect, parameters, materials, properties, sheet_metal, assembly, drawing, analysis, view, system). | `group` |
 | `read_pdf_text` | Text of a PDF (datasheets, standards, drawings from others) using only Python's standard library. Works for most PDFs written with simple fonts; scanned pages and some embedded fonts give little or no text. | `path`*, `max_chars` |
 

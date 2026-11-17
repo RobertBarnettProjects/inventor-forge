@@ -1,6 +1,6 @@
 # inventor-forge
 
-**Autodesk Inventor for AI agents** — an MCP server (and Python library) with 160 tools: parametric
+**Autodesk Inventor for AI agents** — an MCP server (and Python library) with 202 tools: parametric
 parts, sheet metal, assemblies, drawings to AS 1100, ISO, ASME, DIN, BS 8888, JIS or GB with automatic QA, materials and mass
 properties — all through Inventor's COM API — and stress / modal analysis in Inventor's own Stress
 Analysis environment, which has no API and is therefore driven with the mouse and keyboard (below).
@@ -62,7 +62,7 @@ report parser are plain Python.
 - **Direction-agnostic cuts and holes.** Cut extrusions and holes try the side that actually removes
   material, so the agent doesn't have to know Inventor's sketch-normal conventions.
 
-## Tools (160)
+## Tools (202)
 
 Full reference with arguments: [TOOLS.md](TOOLS.md).
 
@@ -107,9 +107,34 @@ Full reference with arguments: [TOOLS.md](TOOLS.md).
 - **Frames** — frame_members: a welded box-section frame from member centre lines in one call, with a cut list (lengths, mitre angles, stock lengths).
 - **Parametric** — link_parameters (master part), parametric_extrusion (fully constrained, expression-driven), model states, named faces, split_faces, check_assembly, component_gap.
 - **Working alongside the user** — connect(private=true) runs in a separate Inventor process; tools refuse to call Inventor during a solve, and read-only tools retry when it is busy.
+- **3D printing and multi-body parts** — export_print_package (native + STL + 3MF + STEP in mm, written atomically,
+  every mesh checked for shells, open edges, extents and bed contact; a millimetre 3MF from the mesh when Inventor's
+  translator can't), export_capabilities, list_bodies, `body=` on extrude / hole / fillet / chamfer / find_edge /
+  find_face / measure with per-body volume deltas, body_gap, pose_bodies (clearances and a picture of another
+  arrangement without changing the part).
+- **Fewer calls** — select_edges / select_faces (filters on the server, indices back), parametric_profile (lines, arcs,
+  circles, extruded or revolved in one call), batch (one undo step, named outputs, rollback on the first failure),
+  set_output (compact results, per-call timings).
 - **Reading** — read_pdf_text (standard library only).
 - **System** — execute_python (persistent namespace with live Inventor objects), reload_api,
   list_tools.
+
+## Reference guides
+
+Short, rule-shaped notes on how Inventor behaves, for the model using the tools: `guide(topic)` returns one, and MCP
+clients can read them as resources (`inventor-forge://guide/<topic>`). Topics: session (working alongside the user,
+hangs, COM binding, unattended runs), modelling, assemblies, stress-analysis, drawings, printing. They live in
+[inventor_forge/guides](inventor_forge/guides).
+
+## Staying healthy in long sessions
+
+- The session is pinned to the Inventor process it connected to; it never moves to another one by itself.
+- Private starts are serialised across processes by a lock file and quit what they started if they can't identify it.
+- A call that stops making progress (window not responding, or no CPU across Inventor and its solver) is warned about
+  after 2 minutes and given up on after 10 (`INVENTOR_FORGE_HANG_WARN`, `INVENTOR_FORGE_HANG_STOP`).
+- "Busy" refusals are retried by a COM message filter; the same call failing the same way twice is not sent again.
+- Long calls keep the PC awake; at most two solves run at once (`INVENTOR_FORGE_MAX_SOLVES`).
+- `connect` checks the active project (`expect_project` / `INVENTOR_FORGE_PROJECT`), unsaved documents and disk space.
 
 ## How the harder parts work
 
@@ -185,7 +210,8 @@ not affiliated with or endorsed by Autodesk.
 |---|---|
 | `INVENTOR_FORGE_READ_ONLY=1` | Refuse every tool that changes a model, and every file write (exports, CSV, screenshots). |
 | `INVENTOR_FORGE_TOOLSETS=sketch,features,drawing` | Offer only these tool groups (system and session tools stay). |
-| `INVENTOR_FORGE_PROTECTED=C:ault;D:eleased` | Never save or export into these folders (Autodesk's library, template and install folders are always protected). |
+| `INVENTOR_FORGE_PROTECTED=C:ault;D:
+eleased` | Never save or export into these folders (Autodesk's library, template and install folders are always protected). |
 | `INVENTOR_FORGE_DEBUG=1` | Extra diagnostics on stderr. |
 
 Each tool's `_meta["inventor-forge/files"]` in `tools/list` says which arguments it writes or reads, for clients

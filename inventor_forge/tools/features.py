@@ -928,7 +928,7 @@ def _tube_frame_brep(s: Session, ms: list, name: str) -> dict:
     for i, m in enumerate(ms):
         a, b = list(m["a"]), list(m["b"])
         u = _unit([b[k] - a[k] for k in range(3)])
-        trims, kinds, mine = [], [], set()
+        trims, kinds, mine, caps = [], [], set(), []
         for side, P, out in (("a", a, [-c for c in u]), ("b", b, u)):
             others = [(j, sd) for j, sd in ends[key(P)] if j != i]
             kind = _end_kind(P, i, ms)
@@ -940,8 +940,26 @@ def _tube_frame_brep(s: Session, ms: list, name: str) -> dict:
                     a = P2
                 else:
                     b = P2
-            if kind == "corner" and len(others) == 1:
-                j, sd = others[0]
+            pair = others[0] if kind == "corner" and len(others) == 1 else None
+            if pair and min(m["od"], ms[pair[0]]["od"]) < 0.9 * max(m["od"], ms[pair[0]]["od"]):
+                # unequal tubes don't mitre cleanly: the larger runs on past the joint and is capped, the smaller is
+                # coped into its side
+                j = pair[0]
+                if m["od"] > ms[j]["od"]:
+                    run = ms[j]["od"] / 2
+                    P2 = [P[k] + out[k] * run for k in range(3)]
+                    if side == "a":
+                        a = P2
+                    else:
+                        b = P2
+                    caps.append(([P2[k] - out[k] * max(m["wall"], 2.0) for k in range(3)], [-c for c in out]))
+                    kinds.append("run-on, capped")
+                else:
+                    mine.add(j)
+                    kinds.append("tee")
+                continue
+            if pair:
+                j, sd = pair
                 mj = ms[j]
                 q = mj["b"] if sd == "a" else mj["a"]
                 d_me = _unit([-c for c in out])         # from the node along me
@@ -963,13 +981,13 @@ def _tube_frame_brep(s: Session, ms: list, name: str) -> dict:
             else:
                 kinds.append(kind)
         m["ends"] = kinds
-        plans.append((a, b, trims))
+        plans.append((a, b, trims, caps))
         hosts.append(sorted(mine))
 
-    def member(i, radius):
-        a, b, trims = plans[i]
+    def member(i, radius, bore=False):
+        a, b, trims, caps = plans[i]
         body = tb.CreateSolidCylinderCone(pt(a), pt(b), radius * MM, radius * MM, radius * MM)
-        for P, n in trims:
+        for P, n in trims + (caps if bore else []):    # a capped end keeps a wall-thick plate over its bore
             tb.DoBoolean(body, half_space(P, n), I)
         return body
 
@@ -984,7 +1002,7 @@ def _tube_frame_brep(s: Session, ms: list, name: str) -> dict:
         tb.DoBoolean(total, tb.CreateSolidSphere(pt(P), rad * MM), U)
     for i, m in enumerate(ms):
         if m["wall"] > 0:
-            bore = member(i, m["od"] / 2 - m["wall"])
+            bore = member(i, m["od"] / 2 - m["wall"], bore=True)
             for j in hosts[i]:                          # the bore stops at the host's outside: its wall stays whole
                 tb.DoBoolean(bore, member(j, ms[j]["od"] / 2), D)
             tb.DoBoolean(total, bore, D)

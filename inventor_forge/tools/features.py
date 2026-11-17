@@ -757,6 +757,38 @@ def _end_kind(p, i, ms) -> str:
     return "free"
 
 
+def _hosts_at(p, i, ms) -> list[int]:
+    """Members that run through point p (p lies inside them, away from their ends), other than member i: the tubes
+    an end at p is welded onto."""
+    out = []
+    for j, m in enumerate(ms):
+        if j == i or math.dist(p, m["a"]) < 0.01 or math.dist(p, m["b"]) < 0.01:
+            continue
+        a, b = m["a"], m["b"]
+        ab = [b[k] - a[k] for k in range(3)]
+        L2 = sum(v * v for v in ab)
+        t = sum((p[k] - a[k]) * ab[k] for k in range(3)) / L2
+        if 0 < t < 1 and math.dist(p, [a[k] + t * ab[k] for k in range(3)]) < m["od"] / 2 + 0.01:
+            out.append(j)
+    return out
+
+
+def _reach_axis(p, out, host) -> list:
+    """Where an end at p, running on along unit direction `out`, comes closest to the host member's axis: the point a
+    tee end is extended to so its tube is fully coped into the host. Returns p when that is behind the end or far off."""
+    a, b = host["a"], host["b"]
+    d = _unit([b[k] - a[k] for k in range(3)])
+    w = [p[k] - a[k] for k in range(3)]
+    bb = sum(out[k] * d[k] for k in range(3))
+    den = 1 - bb * bb
+    if den < 1e-9:                                    # running along the host: nothing to reach
+        return list(p)
+    s_ = (bb * sum(w[k] * d[k] for k in range(3)) - sum(w[k] * out[k] for k in range(3))) / den
+    if s_ <= 0 or s_ > host["od"]:
+        return list(p)
+    return [p[k] + out[k] * s_ for k in range(3)]
+
+
 @tool("features")
 def tube_frame(s: Session, members: list, od: float = 33.7, wall: float = 2.6, name: str = "Tube frame") -> dict:
     """A welded round-tube (CHS) frame in 3D, in one step: each member is a straight tube on a centre line
@@ -864,8 +896,9 @@ def _perp(n):
 def _tube_frame_brep(s: Session, ms: list, name: str) -> dict:
     """Exact welded CHS frame from transient B-rep: every member is a cylinder; two members meeting at a corner are
     both mitred on the bisector plane; where three or more member ends meet, the tubes end at a welded node; a member
-    ending on another's side is coped into it (ends at its axis, inside the host). Outer solids are unioned, then the
-    bores (mitred the same way) are subtracted, so joints are clean with nothing crossing over."""
+    ending on another's side is coped into it (runs on to the host's axis, inside the host). Outer solids are unioned,
+    then the bores (mitred the same way) are subtracted. A bore stops at the outside of any tube its member is welded
+    onto, so the host's wall stays whole: joints are clean, with nothing crossing over and no holes."""
     tb, tg = s.app.TransientBRep, s.tg
     U, D, I = K.kBooleanTypeUnion, K.kBooleanTypeDifference, K.kBooleanTypeIntersect
     L = 1e4                                            # cm: half-space block size
@@ -891,13 +924,22 @@ def _tube_frame_brep(s: Session, ms: list, name: str) -> dict:
         ends.setdefault(key(m["b"]), []).append((i, "b"))
     plans = []                                          # per member: [start, end, trims]
     nodes = []
+    hosts = []                                          # per member: tubes its ends are welded onto
     for i, m in enumerate(ms):
         a, b = list(m["a"]), list(m["b"])
         u = _unit([b[k] - a[k] for k in range(3)])
-        trims, kinds = [], []
+        trims, kinds, mine = [], [], set()
         for side, P, out in (("a", a, [-c for c in u]), ("b", b, u)):
             others = [(j, sd) for j, sd in ends[key(P)] if j != i]
             kind = _end_kind(P, i, ms)
+            through = _hosts_at(P, i, ms)
+            mine.update(through)
+            if kind == "tee" and through:               # run on into the host so the tube is coped all round
+                P2 = _reach_axis(P, out, ms[through[0]])
+                if side == "a":
+                    a = P2
+                else:
+                    b = P2
             if kind == "corner" and len(others) == 1:
                 j, sd = others[0]
                 mj = ms[j]
@@ -922,6 +964,7 @@ def _tube_frame_brep(s: Session, ms: list, name: str) -> dict:
                 kinds.append(kind)
         m["ends"] = kinds
         plans.append((a, b, trims))
+        hosts.append(sorted(mine))
 
     def member(i, radius):
         a, b, trims = plans[i]
@@ -941,7 +984,10 @@ def _tube_frame_brep(s: Session, ms: list, name: str) -> dict:
         tb.DoBoolean(total, tb.CreateSolidSphere(pt(P), rad * MM), U)
     for i, m in enumerate(ms):
         if m["wall"] > 0:
-            tb.DoBoolean(total, member(i, m["od"] / 2 - m["wall"]), D)
+            bore = member(i, m["od"] / 2 - m["wall"])
+            for j in hosts[i]:                          # the bore stops at the host's outside: its wall stays whole
+                tb.DoBoolean(bore, member(j, ms[j]["od"] / 2), D)
+            tb.DoBoolean(total, bore, D)
 
     before = s.snapshot()
     cd = s.cdef()

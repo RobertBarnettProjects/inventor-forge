@@ -19,13 +19,8 @@ def _occ(s: Session, name: str):
         if not 1 <= i <= occs.Count:
             raise InventorError(f"occurrence {i} out of range 1..{occs.Count}")
         return occs.Item(i)
-    for o in items(occs):
-        if o.Name.lower() == str(name).lower():
-            return o
-    for o in items(occs):
-        if o.Name.lower().startswith(str(name).lower()):
-            return o
-    raise InventorError(f"no occurrence {name!r} (see inspect_assembly)")
+    from .drawing import exact_occurrence
+    return exact_occurrence(list(items(occs)), str(name))
 
 
 def _proxy(occ, geometry):

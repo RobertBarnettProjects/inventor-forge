@@ -416,38 +416,88 @@ def guarded_save(d) -> None:
     d.Save()
 
 
+def pending_saves(s: Session, d) -> list[dict]:
+    """The documents a save of d would write: d itself when it has changes, and every changed document it uses."""
+    rows = []
+    for x in [d] + list(items(safe(lambda: d.AllReferencedDocuments) or [])):
+        if safe(lambda x=x: x.Dirty, False):
+            fn = safe(lambda x=x: x.FullFileName, "") or "(never saved)"
+            rows.append({"name": safe(lambda x=x: x.DisplayName, "?"), "path": fn})
+    return rows
+
+
+def same_file(a: str, b: str) -> bool:
+    return bool(a and b) and os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+
+
 @tool("documents")
-def save_document(s: Session, path: str = "") -> dict:
-    """Save the active document; with a path, Save As (folders are created). Relative paths go
-    under ~/Documents/inventor-forge."""
+def save_document(s: Session, path: str = "", list_only: bool = False, supersede: bool = False) -> dict:
+    """Save the active document and the changed documents it uses, without any dialog (Inventor's silent mode takes
+    the default answer, so a "save the parts too?" prompt can't hold the session). With a path, Save As (folders are
+    created); a path that is the document's own file saves in place. Relative paths go under ~/Documents/inventor-forge.
+    The documents to be written are listed in the result.
+
+    path: Save As target ("" or the document's own path saves in place)
+    list_only: only list what would be saved, and where; nothing is written
+    supersede: when path names an existing file (a drawing being rebuilt), move that file into a Superseded folder
+      beside it first instead of overwriting it
+    """
     d = s.doc()
+    own = safe(lambda: d.FullFileName, "")
     if path:
         if not os.path.isabs(path):
             path = os.path.join(s.workdir, path)
         ext = {"part": ".ipt", "assembly": ".iam", "drawing": ".idw"}.get(s.kind(d), "")
         if ext and not os.path.splitext(path)[1]:
             path += ext
+        if same_file(path, own):
+            path = ""                       # the same file: a plain save, not a Save As onto itself
+    pending = pending_saves(s, d)
+    if list_only:
+        return {"would_save": pending, "target": path or own or "(needs a path)",
+                "save_as": bool(path), "protected": [x["path"] for x in pending if _is_protected(x["path"])]}
+    out: dict = {}
+    if path:
         _guard_write(path)
         os.makedirs(os.path.dirname(path), exist_ok=True)
+        if supersede and os.path.exists(path):
+            from .drawing import supersede_file
+            _guard_write(path, "move")
+            out["superseded"] = supersede_file(path)
         _release_path(s, d, path)
         try:
-            d.SaveAs(path, False)
+            with _silent(s):
+                d.SaveAs(path, False)
         except Exception:
             # drawings started from a DWG template can only be saved as Inventor DWG
             if s.kind(d) == "drawing" and path.lower().endswith(".idw"):
                 path = path[:-4] + ".dwg"
-                d.SaveAs(path, False)
-                return {"saved": safe(lambda: d.FullFileName, path),
+                with _silent(s):
+                    d.SaveAs(path, False)
+                return {"saved": safe(lambda: d.FullFileName, path), "documents": pending, **out,
                         "note": "this drawing uses a DWG template, so it was saved as Inventor .dwg"}
             raise
     else:
-        if not safe(lambda: d.FullFileName, ""):
+        if not own:
             name = plain_name(safe(lambda: d.DisplayName, "Untitled").split(".")[0], "Untitled")
             return save_document(s, os.path.join(s.workdir, name))
-        _guard_write(safe(lambda: d.FullFileName, ""))
+        _guard_write(own)
         _guard_dependents(d)
-        d.Save()
-    return {"saved": safe(lambda: d.FullFileName, path)}
+        with _silent(s):
+            d.Save()
+    left = [x["name"] for x in pending_saves(s, d)]
+    out.update({"saved": safe(lambda: d.FullFileName, path), "documents": pending})
+    if left:
+        out["still_unsaved"] = left
+    return out
+
+
+def _is_protected(path: str) -> bool:
+    try:
+        _guard_write(path)
+        return False
+    except InventorError:
+        return True
 
 
 @tool("documents")

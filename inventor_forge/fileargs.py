@@ -17,6 +17,7 @@ WRITES: dict[str, tuple[str, ...]] = {
     "create_standard_part": ("save_path",),
     "run_study_cases": ("results_path",),
     "copy_assembly": ("folder",),
+    "supersede_drawing": ("path",),
 }
 
 READS: dict[str, tuple[str, ...]] = {

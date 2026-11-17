@@ -27,6 +27,7 @@ STYLES = {"hidden": "kHiddenLineDrawingViewStyle", "visible": "kHiddenLineRemove
           "shaded": "kShadedDrawingViewStyle", "shaded_hidden": "kShadedHiddenLineDrawingViewStyle"}
 STANDARD_SCALES = [10, 5, 4, 2.5, 2, 1, 1 / 2, 1 / 2.5, 1 / 4, 1 / 5, 1 / 10, 1 / 20, 1 / 25, 1 / 50, 1 / 100]
 PDF_TRANSLATOR = "{0AC6FD96-2F4D-42CE-8BE0-8AEA580399E4}"
+SECTION_OVERHANG = 12.0      # mm a section cut line runs past the view (10-16 keeps the letters off the part)
 
 
 def _sheet(s: Session):
@@ -45,6 +46,52 @@ def _view(s: Session, name: str):
         if v.Name.lower() == str(name).lower() or safe(lambda v=v: v.Label.Text, "").lower().startswith(str(name).lower()):
             return v
     raise InventorError(f"no view {name!r} on sheet {sh.Name} (see list_views)")
+
+
+# --------------------------------------------------------------------------- the title block's area
+class _Pt:
+    def __init__(self, x_cm: float, y_cm: float):
+        self.X, self.Y = x_cm, y_cm
+
+
+class _Range:
+    """A stand-in for a title block's RangeBox (cm), for templates whose title block is drawn in the border."""
+    def __init__(self, box_mm):
+        self.MinPoint, self.MaxPoint = _Pt(box_mm[0] * MM, box_mm[1] * MM), _Pt(box_mm[2] * MM, box_mm[3] * MM)
+
+
+TITLE_AREAS: dict = {"default": None}       # (drawing, sheet) -> (x0, y0, x1, y1) mm; "default" for any sheet
+
+
+def _title_range(sh):
+    """The area the title block occupies on a sheet: a set_title_area box for this sheet, else the title block's own
+    range, else the session's title area for sheets with no title block (border-only company templates)."""
+    key = (safe(lambda: sh.Parent.FullDocumentName, "") or safe(lambda: sh.Parent.DisplayName, ""),
+           safe(lambda: sh.Name, ""))
+    if key in TITLE_AREAS:
+        return _Range(TITLE_AREAS[key])
+    rb = safe(lambda: sh.TitleBlock.RangeBox)
+    if rb is not None:
+        return rb
+    return _Range(TITLE_AREAS["default"]) if TITLE_AREAS["default"] else None
+
+
+@tool("drawing")
+def set_title_area(s: Session, x0: float, y0: float, x1: float, y1: float, this_sheet_only: bool = False) -> dict:
+    """Tell the drawing tools where the title block is when the template draws it in the border (so the sheet has no
+    title block object to measure): layout, the parts list, notes, the projection symbol and QA keep clear of this box
+    as they do of a real title block. Sheet mm from the lower-left corner.
+
+    this_sheet_only: only the active sheet (default: every sheet without a title block of its own)
+    """
+    box = (float(min(x0, x1)), float(min(y0, y1)), float(max(x0, x1)), float(max(y0, y1)))
+    if this_sheet_only:
+        sh = _sheet(s)
+        d = s.drawing()
+        TITLE_AREAS[(safe(lambda: d.FullDocumentName, "") or safe(lambda: d.DisplayName, ""), sh.Name)] = box
+    else:
+        TITLE_AREAS["default"] = box
+    return {"title_area_mm": list(box), "scope": "this sheet" if this_sheet_only else "sheets without a title block"}
 
 
 def _scale_text(sc: float) -> str:
@@ -182,7 +229,7 @@ def _standard_note(s: Session, standard: str) -> dict:
     for n in items(sh.DrawingNotes.GeneralNotes):        # one per sheet
         if "GENERAL TOLERANCES" in str(safe(lambda n=n: n.Text, "")):
             safe(lambda n=n: n.Delete())
-    tb = safe(lambda: sh.TitleBlock.RangeBox)
+    tb = _title_range(sh)
     x0 = (tb.MinPoint.X * 10 - 4) if tb is not None else sh.Width * 10 - 200
     y0 = (tb.MinPoint.Y * 10 + 2) if tb is not None else 20
     text = "<Br/>".join(lines)
@@ -316,7 +363,7 @@ def _settle(s: Session, v) -> bool:
     first free spot on the sheet, scanning from the top-right. Returns True if it moved."""
     sh = _sheet(s)
     W, H = sh.Width * 10, sh.Height * 10
-    tb = safe(lambda: sh.TitleBlock.RangeBox)
+    tb = _title_range(sh)
     blocked = [_lbox(o) for o in items(sh.DrawingViews) if o.Name != v.Name]
     if tb is not None:
         blocked.append((tb.MinPoint.X * 10, tb.MinPoint.Y * 10, tb.MaxPoint.X * 10, tb.MaxPoint.Y * 10))
@@ -376,10 +423,10 @@ def add_section_view(s: Session, parent: str, x: float, y: float, cut: str = "ve
     pv = _view(s, parent)
     l, b0, rr, t = _box(pv)
     cx, cy = (l + rr) / 2, (b0 + t) / 2
-    if cut.startswith("v"):
-        ends = [(cx + offset, b0 - 6), (cx + offset, t + 6)]
+    if cut.startswith("v"):            # the line runs past the view so its letters sit clear of the part
+        ends = [(cx + offset, b0 - SECTION_OVERHANG), (cx + offset, t + SECTION_OVERHANG)]
     else:
-        ends = [(l - 6, cy + offset), (rr + 6, cy + offset)]
+        ends = [(l - SECTION_OVERHANG, cy + offset), (rr + SECTION_OVERHANG, cy + offset)]
     sk = pv.Sketches.Add()
     sk.Edit()
     pts = [sk.SheetToSketchSpace(s.tg.CreatePoint2d(px * MM, py * MM)) for px, py in ends]
@@ -438,17 +485,29 @@ def _model_entity(s: Session, v, kind: str, index: int, occurrence: str = ""):
     else:
         if not occurrence:
             raise InventorError("assembly view: give occurrence= the component name")
-        occ = None
-        for o in items(md.ComponentDefinition.Occurrences):
-            if o.Name.lower().startswith(occurrence.lower()):
-                occ = o
-        if occ is None:
-            raise InventorError(f"no occurrence {occurrence!r}")
+        occ = exact_occurrence(list(items(md.ComponentDefinition.Occurrences.AllLeafOccurrences)) +
+                               list(items(md.ComponentDefinition.Occurrences)), occurrence)
         body = occ.SurfaceBodies.Item(1)
     coll = body.Edges if kind == "edge" else body.Faces
     if not 1 <= index <= coll.Count:
         raise InventorError(f"{kind} {index} out of range 1..{coll.Count}")
     return coll.Item(index)
+
+
+def exact_occurrence(occs: list, name: str):
+    """A component by its exact name ("Runner:1"), or by a name without the ":n" when exactly one matches. Never by
+    substring: a weld body called "FW_Runner_Deck" must not be taken for "Runner"."""
+    want = str(name).strip().lower()
+    exact = [o for o in occs if safe(lambda o=o: o.Name, "").lower() == want]
+    if exact:
+        return exact[0]
+    base = [o for o in occs if safe(lambda o=o: o.Name, "").lower().rsplit(":", 1)[0] == want.rstrip(":")]
+    names = sorted({safe(lambda o=o: o.Name, "") for o in base})
+    if len(names) == 1:
+        return base[0]
+    if names:
+        raise InventorError(f"{name!r} matches several components {names[:8]}; give the full name")
+    raise InventorError(f"no component named {name!r}; there are {sorted({o.Name for o in occs})[:20]}")
 
 
 def drawing_curves(v, entity=None):
@@ -613,7 +672,7 @@ def add_parts_list(s: Session, view: str = "", x: float = 0.0, y: float = 0.0) -
     sh = _sheet(s)
     v = _view(s, view) if view else sh.DrawingViews.Item(1)
     if not (x or y):
-        tb = safe(lambda: sh.TitleBlock.RangeBox)
+        tb = _title_range(sh)
         x = (tb.MaxPoint.X * 10) if tb is not None else sh.Width * 10 - 10
         y = (tb.MaxPoint.Y * 10 + 5) if tb is not None else 80
     pl = sh.PartsLists.Add(v, s.tg.CreatePoint2d(x * MM, y * MM))
@@ -863,7 +922,7 @@ def place_view_labels(s: Session) -> dict:
 def _region(sh) -> dict:
     """Free drawing area: inside a 10 mm border margin and above the title block band."""
     W, H = sh.Width * 10, sh.Height * 10
-    tb = safe(lambda: sh.TitleBlock.RangeBox)
+    tb = _title_range(sh)
     tb_top = tb.MaxPoint.Y * 10 if tb is not None else 10.0
     tb_left = tb.MinPoint.X * 10 if tb is not None else W
     return {"x0": 22.0, "x1": W - 14.0, "y0": tb_top + 14.0, "y1": H - 14.0, "W": W, "H": H,
@@ -1169,10 +1228,39 @@ def _note_score(sh, box, own=None) -> float:
         rb = safe(lambda n_=n_: n_.Text.RangeBox)
         if rb is not None and _overlap(box, _mm_box(rb), -1.5):
             score += 20
-    tb = safe(lambda: sh.TitleBlock.RangeBox)
+    for ob in _annotation_obstacles(sh):
+        if _overlap(box, ob, 0.0):
+            score += 25
+    tb = _title_range(sh)
     if tb is not None and _overlap(box, _mm_box(tb), 0):
         score += 50
     return score
+
+
+def _annotation_obstacles(sh) -> list:
+    """Boxes (sheet mm) notes must keep clear of besides views and dimensions: view labels, sketched symbols (view
+    titles, item tags), general notes, and the letters at the ends of section cut lines."""
+    out = []
+    for v in items(sh.DrawingViews):
+        if safe(lambda v=v: v.ShowLabel, False):
+            rb = safe(lambda v=v: v.Label.RangeBox)
+            if rb is not None:
+                out.append(_mm_box(rb))
+        for sk in items(safe(lambda v=v: v.Sketches) or []):
+            for ln in items(safe(lambda sk=sk: sk.SketchLines) or []):
+                for pt in (safe(lambda ln=ln: ln.StartSketchPoint.Geometry), safe(lambda ln=ln: ln.EndSketchPoint.Geometry)):
+                    q = safe(lambda pt=pt, sk=sk: sk.SketchToSheetSpace(pt)) if pt is not None else None
+                    if q is not None:
+                        out.append((q.X * 10 - 7, q.Y * 10 - 7, q.X * 10 + 7, q.Y * 10 + 7))
+    for q in items(safe(lambda: sh.SketchedSymbols) or []):
+        rb = safe(lambda q=q: q.RangeBox)
+        if rb is not None:
+            out.append(_mm_box(rb))
+    for n in items(safe(lambda: sh.DrawingNotes.GeneralNotes) or []):
+        rb = safe(lambda n=n: n.RangeBox)
+        if rb is not None:
+            out.append(_mm_box(rb))
+    return out
 
 
 def _place_note(s: Session, sh, make, anchor_cm, view_box, level: float = 0.0, with_score: bool = False):
@@ -1947,7 +2035,7 @@ def check_drawing(s: Session) -> dict:
     issues: list[str] = []
     for sh in items(d.Sheets):
         W, H = sh.Width * 10, sh.Height * 10
-        tb = safe(lambda: sh.TitleBlock.RangeBox)
+        tb = _title_range(sh)
         tbox = (tb.MinPoint.X * 10, tb.MinPoint.Y * 10, tb.MaxPoint.X * 10, tb.MaxPoint.Y * 10) if tb is not None else None
         views = list(items(sh.DrawingViews))
         boxes = [(v.Name, _lbox(v)) for v in views]
@@ -2140,3 +2228,282 @@ def export_pdf(s: Session, path: str, all_sheets: bool = True) -> dict:
     if not os.path.exists(path):
         raise InventorError("PDF translator did not write the file")
     return {"path": path, "bytes": os.path.getsize(path), "sheets": d.Sheets.Count if all_sheets else 1}
+
+
+# --------------------------------------------------------------------------- prompted entries of company templates
+_PROMPT_RX = re.compile(r"<Prompt\b[^>]*>(.*?)</Prompt>", re.S | re.I)
+
+
+def prompt_names(texts: list[str]) -> list[str]:
+    """Prompt names in definition text boxes, in order, once each. Inventor writes them as
+    <Prompt ReadOnlyUniqueID='n'>NAME</Prompt>, so a pattern for a bare <Prompt> tag misses them."""
+    out = []
+    for t in texts:
+        for m in _PROMPT_RX.finditer(t or ""):
+            name = re.sub(r"<[^>]+>", "", m.group(1)).strip()
+            if name and name not in out:
+                out.append(name)
+    return out
+
+
+def bstr_array(values: list[str]):
+    """A typed string array (VT_ARRAY | VT_BSTR). AddTitleBlock / AddBorder need prompt values in this form; a plain
+    Python list goes as an array of VARIANTs and is refused with E_INVALIDARG, the same error as for wrong content."""
+    import pythoncom
+    import win32com.client
+    return win32com.client.VARIANT(pythoncom.VT_ARRAY | pythoncom.VT_BSTR, [str(v) for v in values])
+
+
+def _prompt_boxes(defn) -> list:
+    """(prompt name, TextBox) for every prompted text box of a border or title block definition."""
+    out = []
+    for tb in items(safe(lambda: defn.Sketch.TextBoxes) or []):
+        names = prompt_names([safe(lambda tb=tb: tb.FormattedText, "") or ""])
+        if names:
+            out.append((names[0], tb))
+    return out
+
+
+@tool("drawing")
+def set_prompted_fields(s: Session, fields: dict, all_sheets: bool = True) -> dict:
+    """Fill the prompted entries of the template's border and title block on every sheet (a new drawing made from a
+    template doesn't carry the template's values). Names are the prompts as the template defines them.
+
+    fields: {"CLIENT": "Acme", "DRAWN": "RB", ...}
+    all_sheets: every sheet (false: the active sheet only)
+    """
+    d = s.drawing()
+    sheets = list(items(d.Sheets)) if all_sheets else [d.ActiveSheet]
+    done, available = {}, set()
+    for sh in sheets:
+        for holder in (safe(lambda sh=sh: sh.Border), safe(lambda sh=sh: sh.TitleBlock)):
+            if holder is None:
+                continue
+            for name, box in _prompt_boxes(safe(lambda h=holder: h.Definition)):
+                available.add(name)
+                if name in fields:
+                    holder.SetPromptResultText(box, str(fields[name]))
+                    done.setdefault(name, 0)
+                    done[name] += 1
+    missing = sorted(set(fields) - set(done))
+    out = {"set": done, "sheets": len(sheets)}
+    if missing:
+        out["not_found"] = missing
+        out["prompts_available"] = sorted(available)
+    return out
+
+
+@tool("drawing")
+def set_sheet_format(s: Session, title_block: str = "", border: str = "", prompts: dict | None = None,
+                     all_sheets: bool = False) -> dict:
+    """Replace the title block and/or border on the active sheet (or every sheet) with definitions from the drawing's
+    resources (e.g. a company template's), filling their prompted entries. Prompt values go to Inventor as a typed
+    string array in the definition's own prompt order; prompts not given are left empty.
+
+    title_block: title block definition name ("" keeps the current one)
+    border: border definition name ("" keeps the current one)
+    prompts: {"PROMPT NAME": "value"}
+    """
+    d = s.drawing()
+    prompts = prompts or {}
+    sheets = list(items(d.Sheets)) if all_sheets else [d.ActiveSheet]
+    res = []
+    for sh in sheets:
+        row = {"sheet": sh.Name}
+        if border:
+            defn = safe(lambda: d.BorderDefinitions.Item(border))
+            if defn is None:
+                raise InventorError(f"no border {border!r}; there are {[x.Name for x in items(d.BorderDefinitions)]}")
+            safe(lambda sh=sh: sh.Border.Delete())
+            names = prompt_names([safe(lambda tb=tb: tb.FormattedText, "") for tb in items(defn.Sketch.TextBoxes)])
+            if names:
+                sh.AddBorder(defn, bstr_array([prompts.get(n, "") for n in names]))
+            else:
+                sh.AddBorder(defn)
+            row["border"] = border
+        if title_block:
+            defn = safe(lambda: d.TitleBlockDefinitions.Item(title_block))
+            if defn is None:
+                raise InventorError(f"no title block {title_block!r}; there are "
+                                    f"{[x.Name for x in items(d.TitleBlockDefinitions)]}")
+            safe(lambda sh=sh: sh.TitleBlock.Delete())
+            names = prompt_names([safe(lambda tb=tb: tb.FormattedText, "") for tb in items(defn.Sketch.TextBoxes)])
+            if names:
+                import pythoncom
+                sh.AddTitleBlock(defn, pythoncom.Missing, bstr_array([prompts.get(n, "") for n in names]))
+            else:
+                sh.AddTitleBlock(defn)
+            row["title_block"] = title_block
+        res.append(row)
+    unknown = sorted(set(prompts) - set(prompt_names(
+        [safe(lambda tb=tb: tb.FormattedText, "") for nm, kind in ((border, "BorderDefinitions"),
+                                                                   (title_block, "TitleBlockDefinitions")) if nm
+         for tb in items(safe(lambda nm=nm, kind=kind: getattr(d, kind).Item(nm).Sketch.TextBoxes) or [])])))
+    out = {"sheets": res}
+    if unknown:
+        out["unknown_prompts"] = unknown
+    return out
+
+
+# --------------------------------------------------------------------------- dimension precision
+@tool("drawing")
+def set_dimension_precision(s: Session, indices: list[int] | None = None, precision: int = 0,
+                            sloped_only: bool = True) -> dict:
+    """Set the number of decimals shown on drawing dimensions. Dimensions to sloped or chamfered ends pick up values
+    such as 195.88 that should read 196: by default only dimensions whose value isn't a whole number and that attach
+    to a line that isn't horizontal or vertical on the sheet are changed.
+
+    indices: dimensions (list_drawing_dimensions); default every linear dimension on the sheet
+    precision: decimals (0 = whole millimetres)
+    sloped_only: only dimensions that attach to sloped lines and show a fraction
+    """
+    dims = _sheet(s).DrawingDimensions
+    targets = [int(i) for i in indices] if indices else list(range(1, dims.Count + 1))
+    changed = []
+    for i in targets:
+        dim = _dimension(s, i)
+        if safe(lambda: dim.Precision) is None:
+            continue
+        if sloped_only:
+            val = safe(lambda: dim.ModelValue * 10)
+            if val is None or abs(val - round(val)) < 1e-3 or not _attached_to_slope(dim):
+                continue
+        dim.Precision = int(precision)
+        changed.append({"index": i, "text": safe(lambda: dim.Text.Text, "")})
+    return {"changed": changed, "precision": int(precision)}
+
+
+def _attached_to_slope(dim) -> bool:
+    for att in ("IntentOne", "IntentTwo"):
+        g = safe(lambda a=att: getattr(dim, a).Geometry)
+        seg = safe(lambda g=g: g.Geometry) if g is not None else None
+        sp, ep = safe(lambda: seg.StartPoint), safe(lambda: seg.EndPoint)
+        if sp is None or ep is None:
+            continue
+        dx, dy = abs(ep.X - sp.X), abs(ep.Y - sp.Y)
+        if dx > 1e-6 and dy > 1e-6 and min(dx, dy) / max(dx, dy) > 0.01:
+            return True
+    return False
+
+
+# --------------------------------------------------------------------------- rebuilding drawings people have edited
+def _hand_positions(d) -> dict:
+    """Positions of the notes and sketched symbols on every sheet, keyed so a rebuilt sheet can find them again."""
+    out: dict = {}
+    for sh in items(d.Sheets):
+        rows = []
+        for n in items(safe(lambda sh=sh: sh.DrawingNotes.GeneralNotes) or []):
+            p = safe(lambda n=n: n.Position)
+            if p is not None:
+                rows.append({"kind": "note", "key": str(safe(lambda n=n: n.Text, ""))[:200],
+                             "at_mm": [r(p.X * 10, 2), r(p.Y * 10, 2)]})
+        for q in items(safe(lambda sh=sh: sh.SketchedSymbols) or []):
+            p = safe(lambda q=q: q.Position)
+            if p is not None:
+                key = str(safe(lambda q=q: q.Definition.Name, "")) + "|" + "|".join(
+                    str(safe(lambda tb=tb, q=q: q.GetResultText(tb), "")) for tb in
+                    items(safe(lambda q=q: q.Definition.Sketch.TextBoxes) or []))
+                rows.append({"kind": "symbol", "key": key, "at_mm": [r(p.X * 10, 2), r(p.Y * 10, 2)]})
+        out[sh.Name] = rows
+    return out
+
+
+def supersede_file(path: str) -> str:
+    """Move an existing file into a Superseded folder beside it, with its date, before a rebuild replaces it."""
+    folder = os.path.join(os.path.dirname(path), "Superseded")
+    os.makedirs(folder, exist_ok=True)
+    stem, ext = os.path.splitext(os.path.basename(path))
+    dest = os.path.join(folder, f"{stem} {time.strftime('%Y-%m-%d %H%M%S')}{ext}")
+    os.replace(path, dest)
+    return dest
+
+
+@tool("drawing")
+def supersede_drawing(s: Session, path: str) -> dict:
+    """Before rebuilding a drawing that people may have edited: read where its notes and sketched symbols sit now
+    (positions moved by hand are kept by apply_positions on the rebuilt sheet), then move the file into a Superseded
+    folder beside it so the rebuild can be saved under the same name. The old file is never deleted.
+
+    path: the existing drawing file
+    """
+    from ..writes import guard
+    path = os.path.abspath(path)
+    if not os.path.exists(path):
+        raise InventorError(f"no such file: {path}")
+    guard(path, "move")
+    open_doc = next((x for x in items(s.app.Documents)
+                     if os.path.normcase(safe(lambda x=x: x.FullFileName, "") or "") == os.path.normcase(path)), None)
+    if open_doc is not None and safe(lambda: open_doc.Views.Count, 0):
+        raise InventorError(f"{os.path.basename(path)} is open in Inventor; close it first")
+    from .docs import _silent
+    with _silent(s):
+        d = s.app.Documents.Open(path, False)
+    try:
+        positions = _hand_positions(d)
+    finally:
+        safe(lambda: d.Close(True))
+    dest = supersede_file(path)
+    return {"moved_to": dest, "positions": positions,
+            "next": "build the drawing again, then apply_positions(positions) and save it to the original path"}
+
+
+@tool("drawing")
+def apply_positions(s: Session, positions: dict) -> dict:
+    """Put notes and sketched symbols of the rebuilt drawing where they were in the superseded one (the positions
+    supersede_drawing returned), matched by sheet name and by their text or symbol and prompt values.
+
+    positions: {sheet name: [{"kind": "note"|"symbol", "key": ..., "at_mm": [x, y]}]}
+    """
+    d = s.drawing()
+    now = _hand_positions(d)
+    moved, unmatched = 0, []
+    for sh in items(d.Sheets):
+        want = {(p_["kind"], p_["key"]): p_["at_mm"] for p_ in positions.get(sh.Name, [])}
+        if not want:
+            continue
+        notes = list(items(safe(lambda sh=sh: sh.DrawingNotes.GeneralNotes) or []))
+        syms = list(items(safe(lambda sh=sh: sh.SketchedSymbols) or []))
+        rows = now.get(sh.Name, [])
+        objs = [o for o in notes if safe(lambda o=o: o.Position) is not None] + \
+            [o for o in syms if safe(lambda o=o: o.Position) is not None]
+        for row, obj in zip(rows, objs):
+            at = want.pop((row["kind"], row["key"]), None)
+            if at is not None and at != row["at_mm"]:
+                obj.Position = s.tg.CreatePoint2d(at[0] * MM, at[1] * MM)
+                moved += 1
+        unmatched += [f"{sh.Name}: {k[1][:60]}" for k in want]
+    return {"moved": moved, "not_found": unmatched[:20]}
+
+
+# --------------------------------------------------------------------------- analysis-only bodies
+@tool("drawing")
+def hide_components_in_views(s: Session, names: list[str] | None = None, prefixes: list[str] | None = None,
+                             all_sheets: bool = True) -> dict:
+    """Hide components in every view of an assembly drawing: bodies that exist only for analysis (weld bodies, ground
+    pads) aren't fabricated parts and mustn't show. Components are matched by exact name, or by the start of their
+    name with prefixes (e.g. ["FW_", "Pad_"]).
+
+    names: exact component names ("Weld:1")
+    prefixes: hide every component whose name starts with one of these
+    """
+    if not names and not prefixes:
+        raise InventorError("give names or prefixes")
+    d = s.drawing()
+    sheets = list(items(d.Sheets)) if all_sheets else [d.ActiveSheet]
+    hidden: dict = {}
+    for sh in sheets:
+        for v in items(sh.DrawingViews):
+            md = safe(lambda v=v: v.ReferencedDocumentDescriptor.ReferencedDocument)
+            if md is None or s.kind(md) != "assembly":
+                continue
+            occs = list(items(md.ComponentDefinition.Occurrences.AllLeafOccurrences))
+            pick = []
+            for n in names or []:
+                pick.append(exact_occurrence(occs, n))
+            for p_ in prefixes or []:
+                pick += [o for o in occs if o.Name.startswith(p_)]
+            for o in pick:
+                if safe(lambda v=v, o=o: (v.SetVisibility(o, False), True)[1], False):
+                    hidden.setdefault(o.Name, []).append(f"{sh.Name}/{v.Name}")
+    return {"hidden": {k: len(v) for k, v in hidden.items()}, "views_changed": sorted({x for v in hidden.values()
+                                                                                         for x in v})}

@@ -47,26 +47,51 @@ def _doc_info(s: Session, d) -> dict:
 
 
 @tool("session", mutates=False)
-def connect(s: Session, private: bool = False) -> dict:
-    """Attach to the running Inventor (or start it) and report the version, project and open documents.
+def connect(s: Session, private: bool = False, reattach: bool = False, expect_project: str = "",
+            ignore_checks: bool = False) -> dict:
+    """Attach to the running Inventor (or start it) and report the version, project and open documents. The session
+    stays pinned to that Inventor's process: if it closes, calls are refused instead of moving to another Inventor.
+    Checks the state it finds: the active project, documents that already have unsaved changes, and free disk space.
 
     private: start a separate Inventor process just for this session, leaving any Inventor the user has open
       untouched (close it with close_private_inventor). Use it for long jobs and whenever the user is working.
+    reattach: forget the Inventor chosen earlier and attach to the one running now (after it closed or crashed)
+    expect_project: the project (.ipj path or name) the work needs; a different active project is refused
+      (default: INVENTOR_FORGE_PROJECT, if set)
+    ignore_checks: connect even when the checks find a problem (they are still reported)
     """
     from .. import uidrive as U
+    from ..health import state_issues
+    if reattach:
+        if s.private:
+            raise InventorError("this session runs its own private Inventor; close_private_inventor first")
+        s.unpin()
     cleaned = U.end_solvers(U.orphaned_solvers()) if private else 0      # left by an Inventor that crashed or was closed
     app = s.start_private() if private else s.app
+    project = safe(lambda: app.DesignProjectManager.ActiveDesignProject.FullFileName, "")
+    docs = [_doc_info(s, d) for d in items(app.Documents) if safe(lambda d=d: d.Views.Count, 1)]
     out = {"version": safe(lambda: app.SoftwareVersion.DisplayVersion, "?"),
            "product": safe(lambda: app.SoftwareVersion.ProductName, "Inventor"),
-           "private": s.private, "process": s.pid, "orphaned_solvers_ended": cleaned,
-           "project": safe(lambda: app.DesignProjectManager.ActiveDesignProject.FullFileName, ""),
-           "documents": [_doc_info(s, d) for d in items(app.Documents) if safe(lambda d=d: d.Views.Count, 1)]}
+           "private": s.private, "process": s.pid, "pinned": s.pinned_pid, "orphaned_solvers_ended": cleaned,
+           "project": project, "documents": docs}
     others = [p for p in U.pids_named("Inventor.exe") if p != s.pid]
     if others:
         out["other_inventors"] = others
         if not s.private:
             out["warning"] = ("more than one Inventor is running and this attached to the first one registered, which "
                               "may be the user's; connect(private=true) gives this session its own")
+    import tempfile
+    stop, warn = state_issues(project, expect_project or os.environ.get("INVENTOR_FORGE_PROJECT", ""),
+                              [d["name"] for d in docs if d.get("dirty")], s.private,
+                              [s.workdir, tempfile.gettempdir()])
+    if warn:
+        out["checks"] = warn
+    if stop:
+        if not ignore_checks:
+            raise InventorError("connected to Inventor (process " + str(s.pid) + "), but it isn't in a state to "
+                                "work in: " + "; ".join(stop) + ". Fix that first, or connect(ignore_checks=true) "
+                                "after the user agrees" + ("; close_private_inventor closes it" if s.private else ""))
+        out["checks"] = stop + warn
     return out
 
 
@@ -81,7 +106,8 @@ def close_private_inventor(s: Session) -> dict:
     app.SilentOperation = True
     for d in list(items(app.Documents.VisibleDocuments)):
         safe(lambda d=d: d.Close(True))
-    s._app, s.private, s.pid, s._current = None, False, None, None
+    s.unpin()
+    s.private = False
     app.Quit()
     import time
     t0 = time.time()

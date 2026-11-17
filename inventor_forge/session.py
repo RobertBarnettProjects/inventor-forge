@@ -56,6 +56,8 @@ class Session:
         self._current = None                   # working document (see doc())
         self._current_key = None
         self.pid: int | None = None            # Inventor's process id, once connected
+        self.pinned_pid: int | None = None     # the Inventor this session chose at connect; never silently another
+        self.hwnd: int | None = None           # its main window, for hang checks made without COM
         self.private = False                   # True when this session started its own Inventor process
         self.workdir = os.path.join(os.path.expanduser("~"), "Documents", "inventor-forge")
         self.standard: str | None = None       # chosen by the user for this session (set_standard); None = not asked yet
@@ -84,19 +86,35 @@ class Session:
 
     def _connect(self):
         import win32com.client as wc
+        pinned = self.pinned_pid
         try:
             raw = wc.GetActiveObject("Inventor.Application")
         except Exception:
+            if pinned:
+                raise InventorError(f"the Inventor this session was working with (process {pinned}) has closed; "
+                                    "nothing else was attached. connect(reattach=true) attaches to another Inventor "
+                                    "or starts one") from None
             restore_environment()        # a new Inventor inherits this environment: it must be a complete one
             raw = wc.DispatchEx("Inventor.Application")
         app = late(raw)          # always late-bound, method results included: predictable across machines
+        pid = self._process_id(app)
+        if pinned and pid != pinned:
+            raise InventorError(f"the Inventor this session was working with (process {pinned}) is gone or no longer "
+                                f"registered; the one answering now is process {pid}, which may be someone else's. "
+                                "Nothing was done in it. connect(reattach=true) switches to it deliberately")
         try:
             if self.visible and not app.Visible:
                 app.Visible = True
         except Exception:
             pass
-        self.pid = self._process_id(app)
+        self.pid = pid
+        self.pinned_pid = pid
+        self.hwnd = safe(lambda: int(app.MainFrameHWND))
         return app
+
+    def unpin(self) -> None:
+        """Forget the Inventor chosen at connect, so the next call may attach to whichever one is running."""
+        self._app, self.pid, self.pinned_pid, self.hwnd, self._current = None, None, None, None, None
 
     @staticmethod
     def _process_id(app) -> int | None:
@@ -105,27 +123,40 @@ class Session:
 
     def start_private(self):
         """Start a separate Inventor process that belongs to this session, so a crash or a stray command
-        can't touch what the user has open. Stops if no new process appeared."""
+        can't touch what the user has open. Starts are serialised across processes by a lock file, so two sessions
+        starting at once can each tell which new Inventor is theirs. If the new process can't be identified, the
+        Inventor this call created is quit again before refusing."""
         import time
 
         import win32com.client as wc
 
+        from .health import start_lock, wait_for_stagger
         from .uidrive import pids_named
         if self.private and self._app is not None:
             return self.app
-        before = set(pids_named("Inventor.exe"))
-        restore_environment()            # a new Inventor inherits this environment: it must be a complete one
-        raw = wc.DispatchEx("Inventor.Application")
-        t0 = time.time()
-        while not set(pids_named("Inventor.exe")) - before and time.time() - t0 < 120:
-            time.sleep(0.5)
-        new = set(pids_named("Inventor.exe")) - before
-        app = late(raw)
-        pid = self._process_id(app) if new else None
-        if pid not in new:
-            raise InventorError("could not start a separate Inventor (no new process appeared); nothing was touched")
-        app.Visible = True
+        with start_lock():
+            wait_for_stagger(pids_named("Inventor.exe"))
+            before = set(pids_named("Inventor.exe"))
+            restore_environment()            # a new Inventor inherits this environment: it must be a complete one
+            raw = wc.DispatchEx("Inventor.Application")
+            try:
+                t0 = time.time()
+                while not set(pids_named("Inventor.exe")) - before and time.time() - t0 < 120:
+                    time.sleep(0.5)
+                new = set(pids_named("Inventor.exe")) - before
+                app = late(raw)
+                pid = self._process_id(app) if new else None
+                if pid not in new:
+                    raise InventorError("could not start a separate Inventor (its process could not be identified); "
+                                        "the Inventor this call started was closed again and nothing else was touched")
+                app.Visible = True
+            except BaseException:
+                safe(lambda: setattr(late(raw), "SilentOperation", True))
+                safe(lambda: late(raw).Quit())
+                raise
         self._app, self.pid, self.private = app, pid, True
+        self.pinned_pid = pid
+        self.hwnd = safe(lambda: int(app.MainFrameHWND))
         self._current = None
         return app
 

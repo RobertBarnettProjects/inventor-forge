@@ -328,22 +328,68 @@ def get_parameters(s: Session, user_only: bool = False) -> dict:
     return out
 
 
+def placement_boxes(s: Session, d) -> dict:
+    """Range box (mm, min xyz + max xyz) of every leaf component of an assembly, or every body of a part, by name."""
+    out: dict = {}
+    kind = s.kind(d)
+    if kind == "assembly":
+        for o in items(safe(lambda: d.ComponentDefinition.Occurrences.AllLeafOccurrences) or []):
+            path = safe(lambda o=o: "/".join(x.Name for x in items(o.OccurrencePath)), "") or safe(lambda o=o: o.Name, "?")
+            rb = safe(lambda o=o: o.RangeBox)
+            if rb is not None and not safe(lambda o=o: o.Suppressed, False):
+                out[path] = tuple(_mm(rb.MinPoint) + _mm(rb.MaxPoint))
+    elif kind == "part":
+        for i, b in enumerate(items(safe(lambda: d.ComponentDefinition.SurfaceBodies) or []), 1):
+            rb = safe(lambda b=b: b.RangeBox)
+            if rb is not None:
+                out[safe(lambda b=b: b.Name, "") or f"body {i}"] = tuple(_mm(rb.MinPoint) + _mm(rb.MaxPoint))
+    return out
+
+
+def box_changes(before: dict, after: dict, tol: float = 0.001) -> list[dict]:
+    """What moved or changed size between two placement_boxes readings: centre shift and size change per item."""
+    rows = []
+    for name in list(before) + [n for n in after if n not in before]:
+        a, b = before.get(name), after.get(name)
+        if a is None:
+            rows.append({"name": name, "change": "appeared", "box_mm": list(b)})
+            continue
+        if b is None:
+            rows.append({"name": name, "change": "gone"})
+            continue
+        shift = [r((b[i] + b[i + 3] - a[i] - a[i + 3]) / 2) for i in range(3)]
+        size = [r((b[i + 3] - b[i]) - (a[i + 3] - a[i])) for i in range(3)]
+        if any(abs(v) > tol for v in shift + size):
+            rows.append({"name": name, "change": "moved" if not any(abs(v) > tol for v in size) else "resized",
+                         "centre_shift_mm": shift, "size_change_mm": size})
+    return rows
+
+
 @tool("parameters")
 def set_parameter(s: Session, name: str, expression: str) -> dict:
-    """Set a parameter's expression (e.g. "40 mm", "d0 * 2", "Thickness + 2") and rebuild."""
+    """Set a parameter's expression (e.g. "40 mm", "d0 * 2", "Thickness + 2") and rebuild. Reports every body (part) or
+    component (assembly) whose range box moved or changed size, so knock-on effects of a parameter that other features
+    hang off are visible before analysis or drawings."""
     ps = _params(s)
     try:
         p = ps.Item(name)
     except Exception:
         raise InventorError(f"no parameter {name!r} (see get_parameters)") from None
-    before = s.snapshot() if s.kind() == "part" else None
+    d = s.doc()
+    before = s.snapshot() if s.kind(d) == "part" else None
+    boxes = placement_boxes(s, d)
     if str(expression).replace(".", "", 1).lstrip("-").isdigit() and safe(lambda: p.Units, "") in ("mm", "cm"):
         expression = f"{expression} mm"
     p.Expression = str(expression)
-    s.doc().Update()
+    d.Update()
     out = {"parameter": _param_row(p)}
     if before is not None:
         out.update(s.delta(f"Param {name}", before))
+    changes = box_changes(boxes, placement_boxes(s, d))
+    out["changed"] = changes[:40]
+    out["unchanged"] = len(boxes) - sum(1 for c in changes if c["change"] != "appeared")
+    if len(changes) > 40:
+        out["changed_total"] = len(changes)
     return out
 
 

@@ -285,7 +285,7 @@ def test_every_declared_write_goes_through_the_gate():
     from inventor_forge.fileargs import WRITES
     for name in WRITES:
         src = inspect.getsource(TOOLS[name].fn)
-        assert "output_path(" in src or "_guard_write(" in src or "save_document(" in src, name
+        assert "output_path(" in src or "guard(" in src or "save_document(" in src, name
 
 
 def test_read_only_mode_blocks_writes_even_from_reading_tools(monkeypatch, tmp_path):

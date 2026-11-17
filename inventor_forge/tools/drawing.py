@@ -13,7 +13,7 @@ import time
 
 from ..com import MM, InventorError, K, items, late, r, safe
 from ..registry import tool
-from ..session import Session
+from ..session import Session, set_name
 from .inspect import face_normal
 
 SIZES = {"A0": "kA0DrawingSheetSize", "A1": "kA1DrawingSheetSize", "A2": "kA2DrawingSheetSize",
@@ -295,7 +295,7 @@ def add_base_view(s: Session, model: str = "", x: float = 120.0, y: float = 170.
     v = sh.DrawingViews.AddBaseView(md, s.tg.CreatePoint2d(x * MM, y * MM), float(scale),
                                     getattr(K, ORIENT[orientation.lower()]), getattr(K, STYLES[style.lower()]))
     if name:
-        v.Name = name
+        set_name(v, name, "view")
     return {"view": _view_row(v)}
 
 
@@ -307,7 +307,7 @@ def add_projected_view(s: Session, parent: str, x: float, y: float, style: str =
     v = sh.DrawingViews.AddProjectedView(_view(s, parent), s.tg.CreatePoint2d(x * MM, y * MM),
                                          getattr(K, STYLES.get(style.lower(), "kFromBaseDrawingViewStyle")))
     if name:
-        v.Name = name
+        set_name(v, name, "view")
     return {"view": _view_row(v)}
 
 

@@ -37,6 +37,23 @@ def restore_environment() -> list[str]:
     return added
 
 
+def set_name(obj, name: str, what: str = "item") -> str:
+    """Rename and read the name back. Inventor silently keeps the old name when the new one is already used (a body
+    named like a feature, for one) or not allowed, so a rename that didn't take is reported, not assumed."""
+    old = safe(lambda: obj.Name, "")
+    try:
+        obj.Name = name
+    except Exception as e:  # noqa: BLE001
+        raise InventorError(f"Inventor refused to rename {what} {old!r} to {name!r} ({e}); the name may be in use or "
+                            "not allowed") from None
+    got = safe(lambda: obj.Name, "")
+    if got != name:
+        raise InventorError(f"Inventor kept the name {got!r} for {what} {old!r} instead of {name!r}: names already "
+                            "used by another feature, body or parameter, and some reserved names, are ignored "
+                            "without an error. Choose another name")
+    return got
+
+
 @dataclass
 class Snapshot:
     volume: float = 0.0

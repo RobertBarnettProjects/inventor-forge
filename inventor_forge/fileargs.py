@@ -16,6 +16,7 @@ WRITES: dict[str, tuple[str, ...]] = {
     "flat_pattern": ("dxf_path",),
     "create_standard_part": ("save_path",),
     "run_study_cases": ("results_path",),
+    "copy_assembly": ("folder",),
 }
 
 READS: dict[str, tuple[str, ...]] = {

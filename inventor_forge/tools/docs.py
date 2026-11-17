@@ -630,6 +630,64 @@ def set_view(s: Session, view: str = "iso", fit: bool = True) -> dict:
     return {"view": view}
 
 
+DISPLAY_MODES = {"shaded": "kShadedRendering", "shaded_edges": "kShadedWithEdgesRendering",
+                 "shaded_hidden_edges": "kShadedWithHiddenEdgesRendering", "wireframe": "kWireframeNoHiddenEdges",
+                 "wireframe_hidden_edges": "kWireframeWithHiddenEdgesRendering"}
+
+
+def _mode_name(v) -> str:
+    for k, c in DISPLAY_MODES.items():
+        if K.get(c) == v:
+            return k
+    return str(v)
+
+
+@tool("view")
+def set_display(s: Session, mode: str = "", scope: str = "view", shared_ok: bool = False) -> dict:
+    """Visual style (shaded, shaded with edges, wireframe...) and where it is set. "view" changes only the window on
+    screen (nothing is stored); "document" stores it as the document's style for new windows (saved with the file);
+    "application" changes Inventor's application options, which are shared by every Inventor this Windows user runs
+    and written back when each one exits. With no mode, reports the current setting at each level.
+
+    mode: shaded, shaded_edges, shaded_hidden_edges, wireframe, wireframe_hidden_edges
+    scope: view | document | application
+    shared_ok: allow scope=application in an Inventor this session didn't start (the user's settings change too)
+    """
+    scope = (scope or "view").strip().lower()
+    if scope not in ("view", "document", "application"):
+        raise InventorError("scope must be view, document or application")
+    app, d = s.app, s.doc()
+    if mode:
+        key = DISPLAY_MODES.get(mode.strip().lower())
+        if not key:
+            raise InventorError(f"mode must be one of {sorted(DISPLAY_MODES)}")
+        value = getattr(K, key)
+        if scope == "view":
+            v = s.view()
+            if v is None:
+                raise InventorError("no window to set; open the document visibly first")
+            v.DisplayMode = value
+        elif scope == "document":
+            d.DisplaySettings.NewWindowDisplayMode = value
+            safe(lambda: setattr(s.view(), "DisplayMode", value))
+        else:
+            if not s.private and not shared_ok:
+                raise InventorError("application options are shared with every Inventor this user runs and are "
+                                    "written back on exit; use scope=view or document, or shared_ok=true after the "
+                                    "user agrees")
+            app.DisplayOptions.NewWindowDisplayMode = value
+    view = safe(lambda: s.view())
+    out = {"view": _mode_name(safe(lambda: view.DisplayMode)) if view is not None else None,
+           "document": _mode_name(safe(lambda: d.DisplaySettings.NewWindowDisplayMode)),
+           "application": _mode_name(safe(lambda: app.DisplayOptions.NewWindowDisplayMode))}
+    if mode:
+        out["set"] = {"mode": mode, "scope": scope}
+        got = out.get(scope)
+        if got != mode.strip().lower():
+            out["warning"] = f"Inventor reports {got!r} at {scope} level after setting {mode!r}"
+    return out
+
+
 # Z-up orientations (3D printing, most STEP/STL from other tools): where the eye sits relative to the model, and
 # which way is up on screen. Inventor's own orientations are Y-up.
 _Z_UP = {"iso": ((1, -1, 1), (0, 0, 1)), "iso_left": ((-1, -1, 1), (0, 0, 1)),

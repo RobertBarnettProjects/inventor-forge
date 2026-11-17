@@ -6,7 +6,7 @@ import math
 
 from ..com import MM, InventorError, K, items, r, safe
 from ..registry import tool
-from ..session import Session
+from ..session import Session, set_name
 from .inspect import face_normal, find_planar_face
 
 OPS = {"join": "kJoinOperation", "cut": "kCutOperation", "intersect": "kIntersectOperation",
@@ -422,7 +422,7 @@ def work_plane(s: Session, base: str = "XY", offset: float = 0.0, angle: float =
     else:
         wp = wps.AddByPlaneAndOffset(s.work_plane(base), offset * MM)
     if name:
-        wp.Name = name
+        set_name(wp, name, "work plane")
     return {"work_plane": wp.Name}
 
 
@@ -437,8 +437,43 @@ def work_axis(s: Session, face_index: int = 0, edge_index: int = 0, name: str = 
     else:
         raise InventorError("give face_index (cylindrical face) or edge_index")
     if name:
-        wa.Name = name
+        set_name(wa, name, "work axis")
     return {"work_axis": wa.Name}
+
+
+@tool("features")
+def rename(s: Session, kind: str, target: str, new_name: str) -> dict:
+    """Rename a feature, body, sketch, work plane, work axis, user parameter or assembly component, and read the name
+    back: Inventor silently ignores names that are already used (a body named like a feature) or not allowed.
+
+    kind: feature | body | sketch | work_plane | work_axis | parameter | occurrence
+    target: its current name, or 1-based index (features, bodies, sketches)
+    new_name: the name to give it
+    """
+    k = kind.strip().lower()
+    if k == "occurrence":
+        from .assembly import _occ
+        obj = _occ(s, target)
+    elif k == "feature":
+        obj = _feature(s, target)
+    elif k in ("body", "sketch"):
+        coll = list(items(s.cdef().SurfaceBodies if k == "body" else s.cdef().Sketches))
+        obj = coll[int(target) - 1] if str(target).isdigit() and 1 <= int(target) <= len(coll) else \
+            next((b for b in coll if safe(lambda b=b: b.Name, "").lower() == str(target).lower()), None)
+        if obj is None:
+            raise InventorError(f"no {k} {target!r}; there are {[safe(lambda b=b: b.Name, '?') for b in coll]}")
+    elif k == "work_plane":
+        obj = s.work_plane(target)
+    elif k == "work_axis":
+        obj = s.work_axis(target)
+    elif k == "parameter":
+        obj = safe(lambda: s.doc().ComponentDefinition.Parameters.Item(target))
+        if obj is None:
+            raise InventorError(f"no parameter {target!r} (see get_parameters)")
+    else:
+        raise InventorError("kind must be feature, body, sketch, work_plane, work_axis, parameter or occurrence")
+    old = safe(lambda: obj.Name, str(target))
+    return {"renamed": old, "to": set_name(obj, new_name, k.replace("_", " "))}
 
 
 @tool("features", mutates=False)

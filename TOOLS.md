@@ -36,7 +36,7 @@
 
 | Tool | What it does | Arguments |
 |---|---|---|
-| `set_view` | Orient the active 3D view: iso, iso_left, iso_bottom, front, back, top, bottom, left, right, home. | `view`, `fit` |
+| `set_view` | Orient the active 3D view: iso, iso_left, iso_bottom, front, back, top, bottom, left, right, home. | `view`, `fit`, `up` |
 | `set_display` | Visual style (shaded, shaded with edges, wireframe...) and where it is set. "view" changes only the window on screen (nothing is stored); "document" stores it as the document's style for new windows (saved with the file); "application" changes Inventor's application options, which are shared by every Inventor this Windows user runs and written back when each one exits. With no mode, reports the current setting at each level. | `mode`, `scope`, `shared_ok` |
 | `screenshot` | Save a PNG of the active document's view (model or drawing sheet) — look at it to check your work. Each image comes with its scale (mm per pixel) so sizes on it can be read off. With views, one PNG per orientation in a single call, and the user's camera is put back afterwards. | `path`, `view`, `width`, `height`, `views`, `up`, `clean`, `target`, `center`, `field_mm`, `direction` |
 

@@ -821,8 +821,9 @@ def run_study_cases(s: Session, template: str, cases: list[dict], results_path: 
     doc_path = safe(lambda: s.doc().FullFileName, "")
     private = s.private                       # read now: the session drops the flag the moment its Inventor dies
     reasons: list[str] = []
-    for case in cases:
+    for k, case in enumerate(cases, 1):
         name = case["name"]
+        s.progress = s.progress_case = f"case {k} of {len(cases)}: {name}"
         done = data["cases"].get(name, {})
         if done.get("status") == "done":
             if done.get("values", case.get("values")) != case.get("values") or done.get("template", template) != template:
@@ -861,6 +862,7 @@ def run_study_cases(s: Session, template: str, cases: list[dict], results_path: 
                 s.set_current(s.app.Documents.Open(doc_path, True))
                 pid = _pid(s)
                 _enter_analysis(s)
+    s.progress_case = ""
     fast = fast_outliers({n: data["cases"][n] for n in names if n in data["cases"]})
     return {"ran": ran, "failed": failed, "already_done": skipped, "inventor_restarts": restarts, "restart_reasons": reasons,
             **({"check": f"cases {fast} solved much faster than the rest: check their contacts (list_contacts)"}
@@ -1286,6 +1288,28 @@ def storage(model_path: str) -> dict:
             "gb_per_result": r(total / 2 ** 30 / results, 3) if results else None}
 
 
+def scratch_folders(root: str = "") -> list[dict]:
+    """Stress Analysis scratch folders (%TEMP%\\AFEA_*): a solve's working files, left behind for good when its
+    Inventor ended or was killed (several GB each)."""
+    import tempfile
+    root = root or tempfile.gettempdir()
+    out = []
+    try:
+        names = [n for n in os.listdir(root) if n.upper().startswith("AFEA_")]
+    except OSError:
+        return []
+    for n in names:
+        p = os.path.join(root, n)
+        size, newest = 0, safe(lambda p=p: os.path.getmtime(p), 0.0)
+        for dirpath, _, files in os.walk(p):
+            for f in files:
+                fp = os.path.join(dirpath, f)
+                size += safe(lambda fp=fp: os.path.getsize(fp), 0)
+                newest = max(newest, safe(lambda fp=fp: os.path.getmtime(fp), 0.0))
+        out.append({"path": p, "gb": r(size / 2 ** 30, 3), "idle_hours": r((time.time() - newest) / 3600, 1)})
+    return sorted(out, key=lambda x: -x["gb"])
+
+
 @tool("analysis", mutates=False)
 def analysis_storage(s: Session) -> dict:
     """How much disk the open model's Stress Analysis meshes and results take (kept beside the model until the studies
@@ -1298,7 +1322,42 @@ def analysis_storage(s: Session) -> dict:
     out["studies"] = len(studies)
     if studies:
         out["solved"] = sum(1 for n in studies if safe(lambda n=n: _has_results(s, n), False))
+        if out["result_files"] > out["solved"]:
+            out["note"] = (f"{out['result_files']} result files for {out['solved']} solved studies: deleted studies can "
+                           "leave their files behind")
+    scratch = scratch_folders()
+    if scratch:
+        out["scratch"] = {"gb": r(sum(x["gb"] for x in scratch), 3), "folders": len(scratch),
+                          "note": "solver working folders in %TEMP%, left by ended sessions; clean_analysis_scratch "
+                                  "removes idle ones"}
     return out
+
+
+@tool("analysis")
+def clean_analysis_scratch(s: Session, idle_hours: float = 12.0, confirm: bool = False) -> dict:
+    """Delete Stress Analysis scratch folders (%TEMP%\\AFEA_*) that no solve is using: each session that ended or was
+    killed leaves one behind, several GB each, and nothing else removes them. Refused while any solve runs on the PC.
+    Without confirm, only lists what would go.
+
+    idle_hours: only folders untouched for at least this long
+    confirm: really delete (after the user agreed to the list)
+    """
+    import shutil
+    running = U.pids_named("FEAComputeServer.exe")
+    if confirm and running:
+        raise InventorError(f"a solve is running (solver processes {running}); clean up once it has finished")
+    old = [x for x in scratch_folders() if x["idle_hours"] >= idle_hours]
+    out = {"folders": old, "gb": r(sum(x["gb"] for x in old), 3)}
+    if not confirm:
+        return {**out, "deleted": False, "note": "nothing deleted: call again with confirm=true once the user agrees"}
+    gone, failed = [], []
+    for x in old:
+        try:
+            shutil.rmtree(x["path"])
+            gone.append(x["path"])
+        except OSError as e:
+            failed.append({"path": x["path"], "error": str(e)[:200]})
+    return {**out, "deleted": len(gone), "failed": failed}
 
 
 @tool("analysis")

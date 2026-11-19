@@ -103,6 +103,7 @@ class Session:
         self.workdir = (os.environ.get("INVENTOR_FORGE_WORKDIR", "").strip()
                         or os.path.join(os.path.expanduser("~"), "Documents", "inventor-forge"))
         self.progress = ""                     # what a long tool is doing now (sent to clients as progress)
+        self.progress_case = ""                # which case of a batch is running, added to the progress line
         self.standard: str | None = None       # chosen by the user for this session (set_standard); None = not asked yet
         self.drawing_units = "mm"
 

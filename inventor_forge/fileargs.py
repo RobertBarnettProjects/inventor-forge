@@ -57,6 +57,7 @@ KNOWN: frozenset = frozenset({
     'add_base_view',
     'add_centermarks',
     'add_constraint',
+    'add_custom_table',
     'add_detail_view',
     'add_diameter_dimension',
     'add_general_notes',
@@ -91,6 +92,7 @@ KNOWN: frozenset = frozenset({
     'check_interference',
     'check_sketch',
     'circular_pattern',
+    'clean_analysis_scratch',
     'close_document',
     'close_private_inventor',
     'close_unused_documents',
@@ -250,6 +252,7 @@ KNOWN: frozenset = frozenset({
     'tube_frame',
     'undo',
     'update_contacts',
+    'weld_body',
     'work_axis',
     'work_plane',
 })

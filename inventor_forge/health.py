@@ -355,6 +355,26 @@ LOW_DISK_GB = 5.0          # warn below this (INVENTOR_FORGE_LOW_DISK_GB)
 MIN_DISK_GB = 1.0          # refuse below this
 
 
+def free_memory_gb() -> float | None:
+    """Physical memory free right now (GB), or None when Windows won't say."""
+    import ctypes
+
+    class Status(ctypes.Structure):
+        _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+    st = Status()
+    st.dwLength = ctypes.sizeof(Status)
+    try:
+        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st)):
+            return None
+    except (AttributeError, OSError):
+        return None
+    return st.ullAvailPhys / 2 ** 30
+
+
 def disk_free_gb(path: str) -> float | None:
     try:
         probe = path

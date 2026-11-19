@@ -23,12 +23,24 @@
 - Section cut lines run 10-16 mm past the view so the letters clear the part. Put cuts off-centre so they don't
   collide with a centred view title.
 - Notes keep clear of view labels, sketched symbols and section letters; check every title and leader anyway.
+- Leader-note text runs away from the arrow: text placed left of the arrow point is right-justified to it. Find room
+  on that side, and check leader text in the picture: overlap checks don't see it.
+- Wrap notes with a 10 % margin: capitals are wider than the average character width.
+- A detail view's fence letter has no switch of its own; blanking the detail view's name hides it.
+- A sketched symbol's leader starts at its insertion point, so put the symbol's origin on the corner that faces the
+  target.
+- After any text change, render again: longer text wraps onto more lines and can run into the title block.
+- Totals on a drawing must equal quantity × the rounded value shown for each, and notes must add up the shown totals.
+- Tables of your own (cut lists, weld schedules, load tables): `add_custom_table`. `check_drawing` checks them
+  against views and the title block.
 - End views of fabricated assemblies hide internal members: use a section plus an enlarged detail.
 - Hide analysis-only bodies (weld bodies, ground pads) in views: `hide_components_in_views`.
 - Before calling a stray shape a hidden-component failure, list which components the view actually draws.
 - `AddDetailView` with a circular fence takes a radius number; pass omitted optional arguments as missing, not None.
 
 ## Rebuilding edited drawings
+- To edit only the drawing while its model is in use (a solve), save the drawing alone
+  (`save_document(only_this=true)`), so the model file is never written.
 - People edit generated drawings. Before a rebuild, `supersede_drawing(path)`: it records where notes and symbols
   sit and moves the old file into a Superseded folder. After the rebuild, `apply_positions`, then save to the
   original path.

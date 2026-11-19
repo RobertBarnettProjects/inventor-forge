@@ -907,6 +907,7 @@ def _simulate(s: Session, pid: int, timeout: float = 3600.0, front: bool = True)
     while True:
         if pid not in U.pids_named("Inventor.exe"):
             raise InventorError("Inventor closed during the solve; nothing from this run was stored")
+        s.progress = f"solving, {time.time() - t0:.0f} s" + (f" ({s.progress_case})" if getattr(s, "progress_case", "") else "")
         open_ = [w for w, cls, title in U.window_rows(pid) if cls == "#32770" and title == "Simulate"]
         if not open_:
             break
@@ -941,6 +942,7 @@ def _simulate(s: Session, pid: int, timeout: float = 3600.0, front: bool = True)
 
 FATAL_SOLVE = ("degenerate element", "negative jacobian", "distorted element")
 MAX_SOLVES = 2             # concurrent solves on one PC (INVENTOR_FORGE_MAX_SOLVES)
+MIN_FREE_GB = 6.0          # free memory a solve needs to start beside others (INVENTOR_FORGE_MIN_FREE_GB)
 
 
 def solve_slot(own_pid: int) -> None:
@@ -954,6 +956,14 @@ def solve_slot(own_pid: int) -> None:
     if len(others) >= limit:
         raise InventorError(f"{len(others)} other Inventor(s) are solving (processes {others}) and the limit is "
                             f"{limit} at once; the PC is busy, so wait for one to finish (solve_state shows them)")
+    # memory, not processor time, is what runs out: each solver uses a couple of threads but several GB
+    from ..health import _env_float, free_memory_gb
+    free = free_memory_gb()
+    need = _env_float("INVENTOR_FORGE_MIN_FREE_GB", MIN_FREE_GB)
+    if others and free is not None and free < need:
+        raise InventorError(f"only {free:.1f} GB of memory is free while {len(others)} other solve(s) run "
+                            f"(processes {others}); another solve now risks a hung Inventor or a lost result. Wait for "
+                            f"one to finish (INVENTOR_FORGE_MIN_FREE_GB sets the floor, {need:g} GB)")
 
 
 def _answer_results_prompt(pid: int) -> int:

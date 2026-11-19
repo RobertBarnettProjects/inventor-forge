@@ -9,7 +9,14 @@
 - Save after each confirmed step. One crash loses every unsaved document in that Inventor.
 - Application options (visual style and others) are shared by every Inventor of the Windows user and written back
   on exit. Change the view or document setting (`set_display(scope=view|document)`), not the application one.
-- The active project is shared too: `set_active_project` refuses while other Inventors run.
+- The active project is shared too: `set_active_project` refuses while other Inventors run. A private Inventor
+  switches project for itself only (`DesignProject.Activate(False)`); `Activate(True)` changes the default for every
+  Inventor started afterwards.
+- End processes by the PID recorded when they started, never by image name: a name match can end the user's copy.
+- `close_private_inventor` closes the documents, then ends the process: asking Inventor to quit after drawing work
+  has crashed it on the way out and left an error-report window on the user's screen.
+- Check which documents are open, not just whether an Inventor process exists: the user may have closed a file
+  and left Inventor running.
 - Elevated windows (Task Manager, installers) block cursor moves and focus changes; mouse-driven tools check first.
 
 ## Failures
@@ -49,4 +56,9 @@
   that also fires while a failed run is being restarted.
 - Wait on a positive marker that only the awaited step writes; a check that errors must not read as "done".
 - Diagnostic pictures: grab only Inventor's own window or dialog, never the whole screen.
+- A watcher should exit on the first failure: only a task that ends gets noticed. When restarted, it must read what
+  the logs gained while it was down.
+- Size wait timeouts from the slowest run seen (×3), and make a timeout fail loudly; a quiet one lets the next step
+  run into a study that is still solving.
+- Running workers keep the code they started with: restart them after a fix.
 - Keep at most two solves running on one PC, and do drawing work only while at most one runs.

@@ -105,15 +105,20 @@ def close_private_inventor(s: Session) -> dict:
     from .. import uidrive as U
     app, pid = s.app, s.pid
     app.SilentOperation = True
-    for d in list(items(app.Documents.VisibleDocuments)):
+    for d in list(items(app.Documents)):
         safe(lambda d=d: d.Close(True))
     s.unpin()
     s.private = False
-    app.Quit()
+    # with its documents closed, the process is ended rather than asked to quit: Quit after drawing work has crashed
+    # Inventor on the way out and left an error-report window on the user's screen, and a quitting Inventor writes its
+    # application options over the ones the user's own Inventor uses
     import time
+    U.end_solvers([pid])
     t0 = time.time()
-    while pid in U.pids_named("Inventor.exe") and time.time() - t0 < 60:
+    while pid in U.pids_named("Inventor.exe") and time.time() - t0 < 30:
         time.sleep(0.5)
+    if pid in U.pids_named("Inventor.exe"):
+        safe(lambda: app.Quit())
     return {"closed": pid, "solvers_ended": U.end_orphaned_solvers(pid)}
 
 
@@ -432,7 +437,8 @@ def same_file(a: str, b: str) -> bool:
 
 
 @tool("documents")
-def save_document(s: Session, path: str = "", list_only: bool = False, supersede: bool = False) -> dict:
+def save_document(s: Session, path: str = "", list_only: bool = False, supersede: bool = False,
+                  only_this: bool = False) -> dict:
     """Save the active document and the changed documents it uses, without any dialog (Inventor's silent mode takes
     the default answer, so a "save the parts too?" prompt can't hold the session). With a path, Save As (folders are
     created); a path that is the document's own file saves in place. Relative paths go under ~/Documents/inventor-forge.
@@ -442,6 +448,8 @@ def save_document(s: Session, path: str = "", list_only: bool = False, supersede
     list_only: only list what would be saved, and where; nothing is written
     supersede: when path names an existing file (a drawing being rebuilt), move that file into a Superseded folder
       beside it first instead of overwriting it
+    only_this: save the active document alone, never the documents it uses (a drawing whose model another Inventor
+      is solving: writing the model then would make that solve's own save fail)
     """
     d = s.doc()
     own = safe(lambda: d.FullFileName, "")
@@ -454,6 +462,8 @@ def save_document(s: Session, path: str = "", list_only: bool = False, supersede
         if same_file(path, own):
             path = ""                       # the same file: a plain save, not a Save As onto itself
     pending = pending_saves(s, d)
+    if only_this:
+        pending = [x for x in pending if same_file(x["path"], own)] if own else pending[:1]
     if list_only:
         return {"would_save": pending, "target": path or own or "(needs a path)",
                 "save_as": bool(path), "protected": [x["path"] for x in pending if _is_protected(x["path"])]}
@@ -483,9 +493,13 @@ def save_document(s: Session, path: str = "", list_only: bool = False, supersede
             name = plain_name(safe(lambda: d.DisplayName, "Untitled").split(".")[0], "Untitled")
             return save_document(s, os.path.join(s.workdir, name))
         _guard_write(own)
-        _guard_dependents(d)
-        with _silent(s):
-            d.Save()
+        if only_this:
+            with _silent(s):
+                d.Save2(False)              # this document only
+        else:
+            _guard_dependents(d)
+            with _silent(s):
+                d.Save()
     left = [x["name"] for x in pending_saves(s, d)]
     out.update({"saved": safe(lambda: d.FullFileName, path), "documents": pending})
     if left:

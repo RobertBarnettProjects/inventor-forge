@@ -645,9 +645,48 @@ def auto_dimension_view(s: Session, view: str, arrange: bool = True) -> dict:
         n = got.Count if got is not None else 0
     except Exception as e:
         return {"retrieved": 0, "note": f"no retrievable dimensions ({e.__class__.__name__}) — add them with add_linear_dimension"}
-    if arrange and n:
+    removed = _drop_repeats(got) if n else 0
+    if arrange and n - removed:
         safe(lambda: sh.DrawingDimensions.Arrange(got))
-    return {"retrieved": n, "view": v.Name}
+    out = {"retrieved": n - removed, "view": v.Name}
+    if removed:
+        out["repeats_removed"] = removed
+    return out
+
+
+def _span_key(d):
+    """(value, direction, start, end) of a dimension whose line runs across or up the sheet, in sheet mm; None for
+    any other. Read from the dimension line itself: the type constant doesn't reliably say which way it runs."""
+    ln = safe(lambda: d.DimensionLine)
+    p, q = safe(lambda: ln.StartPoint), safe(lambda: ln.EndPoint)
+    if p is None or q is None:
+        return None
+    (x1, y1), (x2, y2) = (p.X * 10, p.Y * 10), (q.X * 10, q.Y * 10)
+    if abs(y1 - y2) < 0.05:
+        way, a, b = "h", min(x1, x2), max(x1, x2)
+    elif abs(x1 - x2) < 0.05:
+        way, a, b = "v", min(y1, y2), max(y1, y2)
+    else:
+        return None
+    return (round(safe(lambda: d.ModelValue, 0.0) * 10, 2), way, a, b)
+
+
+def _drop_repeats(dims) -> int:
+    """Delete retrieved dimensions that repeat another: the same value over the same span in the same direction.
+    Parts made of several bodies or sketches retrieve one per body or sketch (two plates both 200 long give two
+    200s side by side), which says nothing more and crowds the view."""
+    seen, n = set(), 0
+    for d in list(items(dims)):
+        k = _span_key(d)
+        if k is None:
+            continue
+        near = next((x for x in seen if x[:2] == k[:2] and abs(x[2] - k[2]) <= 1 and abs(x[3] - k[3]) <= 1), None)
+        if near is not None:
+            if safe(lambda d=d: (d.Delete(), True)[1], False):
+                n += 1
+            continue
+        seen.add(k)
+    return n
 
 
 @tool("drawing")
@@ -2223,6 +2262,59 @@ def add_revision_table(s: Session, x: float = 0.0, y: float = 0.0) -> dict:
             "box_mm": [r(rb.MinPoint.X * 10, 1), r(rb.MinPoint.Y * 10, 1), r(rb.MaxPoint.X * 10, 1), r(rb.MaxPoint.Y * 10, 1)]}
 
 
+@tool("drawing")
+def add_custom_table(s: Session, title: str, columns: list[str], rows: list[list], x: float = 0.0, y: float = 0.0,
+                     column_widths: list[float] | None = None) -> dict:
+    """A table of your own on the active sheet: a cut list, weld schedule, load table, bend table. Values are written
+    cell by cell and read back. Default placement is the top-left corner of the drawing area; the table is kept on
+    the sheet, and check_drawing reports it overlapping views or the title block.
+
+    title: table title
+    columns: column headings
+    rows: one list of values per row, as many as columns
+    x: left edge, mm from the sheet's left (0 = default placement)
+    y: top edge, mm from the sheet's bottom
+    column_widths: mm per column (default: Inventor's)
+    """
+    cols = [str(c) for c in columns or []]
+    if not cols:
+        raise InventorError("give at least one column heading")
+    body = [["" if v is None else str(v) for v in row] for row in rows or []]
+    bad = [i + 1 for i, row in enumerate(body) if len(row) != len(cols)]
+    if bad:
+        raise InventorError(f"rows {bad} don't have {len(cols)} values (one per column)")
+    if column_widths is not None and len(column_widths) != len(cols):
+        raise InventorError("column_widths needs one width per column")
+    sh = _sheet(s)
+    g = _region(sh)
+    if not (x or y):
+        x, y = g["x0"], g["y1"]
+    # the headings go as a plain list (a typed VARIANT array is refused here, unlike title-block prompts); giving
+    # contents or widths in the same call is refused too, so those are set cell by cell afterwards
+    res = sh.CustomTables.Add(title, s.tg.CreatePoint2d(x * MM, y * MM), len(cols), max(1, len(body)), cols)
+    t = res[0] if isinstance(res, tuple) else res
+    t = late(t)
+    for ri, row in enumerate(body, 1):
+        for ci, v in enumerate(row, 1):
+            t.Rows.Item(ri).Item(ci).Value = v
+    if column_widths:
+        for ci, wmm in enumerate(column_widths, 1):
+            t.Columns.Item(ci).Width = float(wmm) * MM
+    wrong = [(ri, ci) for ri, row in enumerate(body, 1) for ci, v in enumerate(row, 1)
+             if str(safe(lambda ri=ri, ci=ci: t.Rows.Item(ri).Item(ci).Value, "")) != v]
+    rb = t.RangeBox                                         # keep the whole table on the sheet
+    dx = min(0.0, (sh.Width * 10 - 12) - rb.MaxPoint.X * 10) + max(0.0, 12 - rb.MinPoint.X * 10)
+    dy = min(0.0, (sh.Height * 10 - 12) - rb.MaxPoint.Y * 10) + max(0.0, 12 - rb.MinPoint.Y * 10)
+    if dx or dy:
+        t.Position = s.tg.CreatePoint2d(t.Position.X + dx * MM, t.Position.Y + dy * MM)
+        rb = t.RangeBox
+    out = {"title": title, "rows": len(body), "columns": len(cols),
+           "box_mm": [r(rb.MinPoint.X * 10, 1), r(rb.MinPoint.Y * 10, 1), r(rb.MaxPoint.X * 10, 1), r(rb.MaxPoint.Y * 10, 1)]}
+    if wrong:
+        out["check"] = f"cells {wrong[:10]} didn't keep the value written"
+    return out
+
+
 # --------------------------------------------------------------------------- QA, render, PDF
 def _text_box(dim):
     """Approximate box of a dimension's text (3.5 mm text; vertical dimensions read rotated)."""
@@ -2353,12 +2445,15 @@ def check_drawing(s: Session) -> dict:
             for n1, b1 in boxes:
                 if _overlap(pb, b1, 1):
                     issues.append(f"[{sh.Name}] parts list overlaps view {n1}")
-        tables = [("revision table", t_) for t_ in items(sh.RevisionTables)] + [("hole table", t_) for t_ in items(sh.HoleTables)]
+        tables = ([("revision table", t_) for t_ in items(sh.RevisionTables)] + [("hole table", t_) for t_ in items(sh.HoleTables)]
+                  + [(f"table '{safe(lambda t_=t_: t_.Title, '')}'", t_) for t_ in safe(lambda: items(sh.CustomTables), [])])
         for tname, t_ in tables:
             rb = t_.RangeBox
             if rb.MaxPoint.X * 10 > W - 5 or rb.MinPoint.X * 10 < 5 or rb.MinPoint.Y * 10 < 5 or rb.MaxPoint.Y * 10 > H - 5:
                 issues.append(f"[{sh.Name}] {tname} runs off the sheet")
             tb2 = (rb.MinPoint.X * 10, rb.MinPoint.Y * 10, rb.MaxPoint.X * 10, rb.MaxPoint.Y * 10)
+            if tname.startswith("table") and tbox and _overlap(tb2, tbox, 1):
+                issues.append(f"[{sh.Name}] {tname} overlaps the title block")
             for n1, b1 in boxes:
                 if _overlap(tb2, b1, 1):
                     issues.append(f"[{sh.Name}] {tname} overlaps view {n1}")

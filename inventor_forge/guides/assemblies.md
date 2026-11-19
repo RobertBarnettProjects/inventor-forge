@@ -19,6 +19,10 @@
 - References are mapped by file name only. A whole-path text replace also rewrites folder names that share the
   prefix.
 - Verify from the saved files' `ReferencedFileDescriptors`. `AllReferencedDocuments` lists loaded documents only.
+  The descriptors also list the Stress Analysis set-up files (`AIP\FEA`), and a copied model can still point at its
+  source's: check for missing references (`referenced_files`) before moving any folder.
+- Walking `File.AllReferencedFiles` has crashed Inventor; use the open documents and the top file's descriptors.
+- `os.path.normcase` lower-cases paths: compare with it, but copy and save with the real path.
 - Never rename or move a folder other copies may still link to: their studies fail with "Invalid constraint".
 - Repointing can drop Stress Analysis contacts, which automatic contacts recreate as Bonded. `copy_assembly`
   compares contact types before and after; set them again if they changed.

@@ -994,6 +994,117 @@ def tube_frame(s: Session, members: list, od: float = 33.7, wall: float = 2.6, n
         raise
 
 
+def _unit_vec(v, what: str) -> list[float]:
+    n = math.sqrt(sum(x * x for x in v))
+    if n < 1e-9:
+        raise InventorError(f"{what} has no length")
+    return [x / n for x in v]
+
+
+def _weld_runs(runs: list[dict]) -> list[dict]:
+    out = []
+    for i, run in enumerate(runs, 1):
+        try:
+            a, b = [float(x) for x in run["start"]], [float(x) for x in run["end"]]
+            leg = float(run["leg"])
+            dirs = [[float(x) for x in d] for d in run["leg_dirs"]]
+        except (KeyError, TypeError, ValueError) as e:
+            raise InventorError(f"weld run {i}: needs start [x,y,z], end [x,y,z], leg (mm) and leg_dirs "
+                                f"[[x,y,z],[x,y,z]] ({e})") from None
+        if len(a) != 3 or len(b) != 3 or len(dirs) != 2 or any(len(d) != 3 for d in dirs):
+            raise InventorError(f"weld run {i}: start, end and each leg direction are [x, y, z]")
+        if leg <= 0:
+            raise InventorError(f"weld run {i}: leg must be positive")
+        L = math.dist(a, b)
+        if L < 1e-6:
+            raise InventorError(f"weld run {i}: start and end are the same point")
+        u = [(b[k] - a[k]) / L for k in range(3)]
+        legs = []
+        for d in dirs:                                  # keep each leg square to the run
+            d = _unit_vec(d, f"weld run {i} leg direction")
+            dot = sum(d[k] * u[k] for k in range(3))
+            if abs(dot) > 0.999:
+                raise InventorError(f"weld run {i}: a leg direction runs along the weld")
+            legs.append(_unit_vec([d[k] - dot * u[k] for k in range(3)], f"weld run {i} leg direction"))
+        cos_t = max(-1.0, min(1.0, sum(legs[0][k] * legs[1][k] for k in range(3))))
+        if abs(cos_t) > 0.985:
+            raise InventorError(f"weld run {i}: the two legs point the same way; give one along each plate")
+        area = 0.5 * leg * leg * math.sqrt(1 - cos_t * cos_t)
+        out.append({"a": a, "b": b, "L": L, "leg": leg, "legs": legs, "area": area,
+                    "angle_deg": r(math.degrees(math.acos(cos_t)), 1), "name": str(run.get("name") or f"Weld{i}")})
+    return out
+
+
+@tool("features")
+def weld_body(s: Session, runs: list[dict], name: str = "weld_body") -> dict:
+    """Fillet welds as solid bodies, one per run, for analysis and for showing them: a triangle of the given leg size
+    swept along the run, its two legs lying along the two parts it joins. Bodies that touch both parts carry the load
+    through the weld (with lapped faces set to Separation contacts) instead of the bonded faces treating two plates as
+    one solid section. Each run is checked against its hand-calculated volume (leg^2/2 x length for a square
+    corner). Size the leg to the thicker part's minimum and keep the toe clear of edges and other welds.
+
+    runs: [{"start": [x,y,z], "end": [x,y,z], "leg": 6, "leg_dirs": [[0,0,1], [1,0,0]], "name": "FW_Base_Upright"}];
+      start/end: the weld root (where the two parts meet), mm; leg_dirs: from the root along each part's surface
+    name: undo-group name
+    """
+    ws = _weld_runs(runs)
+    if not ws:
+        raise InventorError("give at least one weld run")
+    tx = s.app.TransactionManager.StartTransaction(s.doc(), name)
+    try:
+        cd = s.cdef()
+        feats = cd.Features
+        made = []
+        for w in ws:
+            before = s.snapshot()
+            step = "path"
+            try:
+                sk3 = cd.Sketches3D.Add()
+                ln = sk3.SketchLines3D.AddByTwoPoints(s.p3(*w["a"]), s.p3(*w["b"]))
+                step = "section plane"
+                wp = cd.WorkPlanes.AddByNormalToCurve(ln, ln.StartSketchPoint)
+                safe(lambda wp=wp: setattr(wp, "Visible", False))
+                sk = cd.Sketches.Add(wp)
+                step = "section"
+                corner = [w["a"], [w["a"][k] + w["leg"] * w["legs"][0][k] for k in range(3)],
+                          [w["a"][k] + w["leg"] * w["legs"][1][k] for k in range(3)]]
+                pts = [sk.ModelToSketchSpace(s.p3(*p)) for p in corner]
+                # each side starts on the previous side's end point, so the triangle is one closed loop
+                l1 = sk.SketchLines.AddByTwoPoints(pts[0], pts[1])
+                l2 = sk.SketchLines.AddByTwoPoints(l1.EndSketchPoint, pts[2])
+                sk.SketchLines.AddByTwoPoints(l2.EndSketchPoint, l1.StartSketchPoint)
+                prof = sk.Profiles.AddForSolid()
+                step = "sweep"
+                f = feats.SweepFeatures.AddUsingPath(prof, feats.CreatePath(ln), K.kNewBodyOperation)
+            except Exception as e:
+                raise InventorError(f"weld_body: run {w['name']} failed at the {step}: {e}") from e
+            safe(lambda sk3=sk3: setattr(sk3, "Visible", False))
+            body = safe(lambda f=f: f.SurfaceBodies.Item(1))
+            if body is not None:
+                safe(lambda body=body, n=w["name"]: setattr(body, "Name", n))
+            s.doc().Update()
+            d = s.delta(w["name"], before)
+            want = w["area"] * w["L"]
+            got = d.get("volume_change_mm3", d.get("dV_mm3"))
+            row = {"name": w["name"], "length_mm": r(w["L"], 1), "leg_mm": w["leg"], "angle_deg": w["angle_deg"],
+                   "volume_mm3": got, "expected_mm3": r(want, 1)}
+            if isinstance(got, (int, float)) and want and abs(got - want) / want > 0.02:
+                row["check"] = ("volume differs from leg^2/2 x length by more than 2%: the sweep may have twisted or "
+                                "met other geometry")
+            made.append(row)
+        tx.End()
+    except Exception:
+        tx.Abort()
+        raise
+    total = sum(w["area"] * w["L"] for w in ws)
+    out = {"welds": made, "runs": len(made), "total_volume_mm3": r(total, 1),
+           "next": "mass_properties for the weld mass; check_interference / body_gap that each weld touches both parts"}
+    checks = [m["name"] for m in made if m.get("check")]
+    if checks:
+        out["checks"] = f"runs {checks} don't match their hand-calculated volume"
+    return out
+
+
 def _unit(v):
     n = math.sqrt(sum(c * c for c in v)) or 1.0
     return [c / n for c in v]

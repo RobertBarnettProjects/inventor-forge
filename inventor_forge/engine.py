@@ -15,6 +15,7 @@ from .com import Apartment, InventorError, com_error_text, safe
 from .health import FailureMemory, HangWatch, keep_awake
 from .registry import TOOLS, load_all
 from .session import Session
+from .writes import current_scope, reset_scope, use_scope
 
 
 def _plain(v: Any) -> Any:
@@ -164,7 +165,16 @@ class Forge:
 
         t_submit = time.time()
 
+        scope = current_scope()        # the caller's write scope, carried into the thread that talks to Inventor
+
         def run():
+            mark = use_scope(scope)
+            try:
+                return _run()
+            finally:
+                reset_scope(mark)
+
+        def _run():
             t_run = time.time()
             busy = self.session.solver_busy()
             if busy:

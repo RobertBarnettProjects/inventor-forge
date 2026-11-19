@@ -102,6 +102,9 @@ class Session:
         self.pinned_pid: int | None = None     # the Inventor this session chose at connect; never silently another
         self.hwnd: int | None = None           # its main window, for hang checks made without COM
         self.private = False                   # True when this session started its own Inventor process
+        # INVENTOR_FORGE_PRIVATE=1 (a client such as an agent sets it): the first call starts this session's own
+        # Inventor instead of attaching to one the user has open; connect(private=false) attaches deliberately
+        self.prefer_private = os.environ.get("INVENTOR_FORGE_PRIVATE", "").strip().lower() in ("1", "true", "yes")
         # relative output paths land here; a client gives its own job folder with INVENTOR_FORGE_WORKDIR
         self.workdir = (os.environ.get("INVENTOR_FORGE_WORKDIR", "").strip()
                         or os.path.join(os.path.expanduser("~"), "Documents", "inventor-forge"))
@@ -134,6 +137,8 @@ class Session:
     def _connect(self):
         import win32com.client as wc
         pinned = self.pinned_pid
+        if self.prefer_private and not pinned:
+            return self.start_private()
         try:
             raw = wc.GetActiveObject("Inventor.Application")
         except Exception:
@@ -141,8 +146,8 @@ class Session:
                 raise InventorError(f"the Inventor this session was working with (process {pinned}) has closed; "
                                     "nothing else was attached. connect(reattach=true) attaches to another Inventor "
                                     "or starts one") from None
-            restore_environment()        # a new Inventor inherits this environment: it must be a complete one
-            raw = wc.DispatchEx("Inventor.Application")
+            # nothing running: the Inventor started now is this session's own, closed again when the session ends
+            return self.start_private()
         app = late(raw)          # always late-bound, method results included: predictable across machines
         pid = self._process_id(app)
         if pinned and pid != pinned:

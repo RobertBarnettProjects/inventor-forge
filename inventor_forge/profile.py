@@ -116,4 +116,8 @@ def tool_meta(t) -> dict:
 def server_profile() -> dict:
     """Sent once in ``initialize`` (``capabilities.experimental["cad/profile"]``)."""
     return {"version": PROFILE_VERSION, "family": "inventor", "units": {"length": "mm", "angle": "deg",
-            "force": "N", "stress": "MPa"}, "preview_export": "STEP", "progress_every_s": PROGRESS_EVERY}
+            "force": "N", "stress": "MPa"}, "preview_export": "STEP", "progress_every_s": PROGRESS_EVERY,
+            # a call's _meta "cad/write_scope" {"dirs", "files"} is enforced at every write, dependent saves
+            # included; a write outside it is refused before anything is written, naming the paths after
+            # "cad/needs_approval:"
+            "write_scope": True}

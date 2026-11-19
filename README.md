@@ -66,6 +66,15 @@ report parser are plain Python.
   how long a call may take for the arguments given. `initialize` advertises it under
   `capabilities.experimental["cad/profile"]`. A client can then refresh previews, warn the user, sandbox writes and
   size its waits without hard-coding any of it (`inventor_forge/profile.py`).
+- **Writes stay where the client allows.** A call may carry `_meta["cad/write_scope"]` = `{"dirs": [...], "files":
+  [...]}`. Every write is checked against it at the moment it happens, with links followed and the final name (an
+  added extension, a `.dwg` fallback): saves include the changed documents an assembly or drawing also writes.
+  Anything outside is refused before a file is touched, and the refusal lists every such path after
+  `cad/needs_approval:`, so a client can ask the user about all of them and send the call again. Forge's own temporary
+  files are always allowed; without a scope, only the protected folders apply.
+- **Its own Inventor, tidied away.** An Inventor the server starts belongs to the session: when the client closes
+  the connection it is closed, or, if it holds unsaved changes, made visible and left open. An Inventor the session
+  only attached to is never closed.
 - **Progress while it works.** A call that carries an MCP progress token gets a progress notification every 10 s
   saying what the tool is doing (a solve's elapsed time, the case of a batch), so a client can tell a long solve
   from a stuck server.
@@ -223,6 +232,7 @@ not affiliated with or endorsed by Autodesk.
 | `INVENTOR_FORGE_DEBUG=1` | Extra diagnostics on stderr. |
 | `INVENTOR_FORGE_WORKDIR=<folder>` | Where relative output paths go (default `~/Documents/inventor-forge`). |
 | `INVENTOR_FORGE_VISIBLE=0` | Start Inventor hidden when it isn't running (same as `--hidden`). |
+| `INVENTOR_FORGE_PRIVATE=1` | Start a separate Inventor for the session instead of attaching to one the user has open (`connect(private=false)` attaches on request). |
 | `INVENTOR_FORGE_MAX_SOLVES=2` | Solves allowed at once on the PC. |
 | `INVENTOR_FORGE_MIN_FREE_GB=6` | Free memory a solve needs to start beside others. |
 

@@ -518,6 +518,12 @@ def copy_assembly(s: Session, folder: str, prefix: str = "", old_prefix: str = "
     if failed:
         out["replace_failures"] = sorted(set(failed))[:10]
     contacts_after = safe(lambda: _contact_table(s)) if contacts_before is not None else None
+    from .docs import _guard_dependents
+    from ..writes import guard as _guard_write
+    top_file = safe(lambda: top.FullFileName, "") or ""
+    if top_file:
+        _guard_write(top_file, "save")
+    _guard_dependents(top)                      # Save2(True) also writes every changed document it uses
     with _silent(s):
         try:
             top.Save2(True)

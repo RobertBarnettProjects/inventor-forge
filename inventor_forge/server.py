@@ -18,6 +18,7 @@ import traceback
 
 from . import __version__
 from .com import InventorError
+from .writes import reset_scope, scope_from_meta, use_scope
 from .engine import Forge, tool_enabled
 from .profile import PROGRESS_EVERY, server_profile, tool_meta
 from .registry import DESTRUCTIVE
@@ -52,6 +53,14 @@ class Server:
         self.emit = emit or (lambda msg, alive=None: None)   # sends a notification to the client (thread-safe)
         self.lock = lock or threading.Lock()                  # the writer's lock
 
+    def finish(self) -> None:
+        """Close the private Inventor this session started (left open and shown if it holds unsaved changes)."""
+        from .tools.docs import finish_session
+        try:
+            finish_session(self.forge.session)
+        except Exception:  # noqa: BLE001
+            pass
+
     def tools_list(self) -> list[dict]:
         out = []
         for t in self.forge.tools.values():
@@ -79,13 +88,17 @@ class Server:
                                   "message": f"{name}: {doing or 'working'} ({elapsed:.0f} s)"}},
                       alive=lambda: not stop.is_set())
 
-    def tools_call(self, name: str, args: dict, token=None) -> dict:
+    def tools_call(self, name: str, args: dict, token=None, scope: dict | None = None) -> dict:
+        """scope: the folders and files this call may write to (the client's "cad/write_scope"); None = no limit
+        beyond the protected folders."""
         stop = threading.Event()
         if token is not None:
             threading.Thread(target=self._heartbeat, args=(name, token, stop), daemon=True).start()
+        mark = use_scope(scope)
         try:
             return self._tools_call(name, args)
         finally:
+            reset_scope(mark)
             with self.lock:                # no heartbeat is mid-write once this is set
                 stop.set()
             try:
@@ -127,8 +140,9 @@ class Server:
             elif method == "tools/list":
                 result = {"tools": self.tools_list()}
             elif method == "tools/call":
-                token = (params.get("_meta") or {}).get("progressToken")
-                result = self.tools_call(params.get("name", ""), params.get("arguments") or {}, token)
+                meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else {}
+                result = self.tools_call(params.get("name", ""), params.get("arguments") or {}, meta.get("progressToken"),
+                                         scope_from_meta(meta))
             elif method == "ping":
                 result = {}
             elif method == "resources/list":
@@ -185,6 +199,7 @@ def main(argv: list[str] | None = None) -> None:
         replies = [r for r in (server.handle(m) for m in batch) if r is not None]
         for rep in replies:
             emit(rep)
+    server.finish()                    # the client closed the connection: tidy up what this session started
 
 
 if __name__ == "__main__":

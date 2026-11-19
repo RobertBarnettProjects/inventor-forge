@@ -48,7 +48,7 @@ def _doc_info(s: Session, d) -> dict:
 
 
 @tool("session", mutates=False)
-def connect(s: Session, private: bool = False, reattach: bool = False, expect_project: str = "",
+def connect(s: Session, private: bool | None = None, reattach: bool = False, expect_project: str = "",
             ignore_checks: bool = False) -> dict:
     """Attach to the running Inventor (or start it) and report the version, project and open documents. The session
     stays pinned to that Inventor's process: if it closes, calls are refused instead of moving to another Inventor.
@@ -56,6 +56,9 @@ def connect(s: Session, private: bool = False, reattach: bool = False, expect_pr
 
     private: start a separate Inventor process just for this session, leaving any Inventor the user has open
       untouched (close it with close_private_inventor). Use it for long jobs and whenever the user is working.
+      Default: true when the client set INVENTOR_FORGE_PRIVATE, else false. false attaches to the Inventor the user
+      has open (only when they ask for that). An Inventor this session starts is its own either way: when the
+      session ends it is closed, or, if it holds unsaved changes, shown and left open for the user.
     reattach: forget the Inventor chosen earlier and attach to the one running now (after it closed or crashed)
     expect_project: the project (.ipj path or name) the work needs; a different active project is refused
       (default: INVENTOR_FORGE_PROJECT, if set)
@@ -63,6 +66,10 @@ def connect(s: Session, private: bool = False, reattach: bool = False, expect_pr
     """
     from .. import uidrive as U
     from ..health import state_issues
+    if private is None:
+        private = s.prefer_private and not reattach
+    elif not private:
+        s.prefer_private = False         # attaching to the user's Inventor was asked for by name
     if reattach:
         if s.private:
             raise InventorError("this session runs its own private Inventor; close_private_inventor first")
@@ -128,6 +135,23 @@ def close_private_inventor(s: Session) -> dict:
                             "connect again before the next call")
     return {"closed": pid, "solvers_ended": U.end_orphaned_solvers(pid),
             "note": "this session is no longer attached to an Inventor; connect before the next call"}
+
+
+def finish_session(s: Session) -> dict:
+    """When the client goes away: close the Inventor this session started. One holding unsaved changes is made
+    visible and left open instead, so nothing is lost; an Inventor the session only attached to is never touched."""
+    if not s.private or not s.connected():
+        return {"closed": None}
+    try:
+        app = s.app
+        dirty = [str(safe(lambda d=d: d.DisplayName, "?")) for d in items(app.Documents)
+                 if safe(lambda d=d: bool(d.Dirty), False)]
+    except Exception:  # noqa: BLE001
+        return {"closed": None}
+    if dirty:
+        safe(lambda: setattr(app, "Visible", True))
+        return {"closed": None, "left_open": s.pid, "unsaved": dirty}
+    return close_private_inventor(s)
 
 
 @tool("session", mutates=False)
@@ -408,16 +432,23 @@ from ..writes import guard as _guard_write, output_path, protected_roots  # noqa
 
 
 def _guard_dependents(d) -> None:
-    """Save also writes changed parts the document uses: none of them may be in a protected folder."""
+    """Save also writes changed parts the document uses: none of them may be in a protected folder, and all of
+    them must be inside the call's write scope (checked together, so one refusal names every such file)."""
+    from ..writes import check_scope
     from ..writes import protected_roots as _roots
     roots = _roots()
+    files = []
     for ref in items(safe(lambda: d.AllReferencedDocuments) or []):
         if not safe(lambda ref=ref: ref.Dirty, False):
             continue
-        fn = os.path.normcase(os.path.realpath(safe(lambda ref=ref: ref.FullFileName, "") or ""))
+        raw = safe(lambda ref=ref: ref.FullFileName, "") or ""
+        fn = os.path.normcase(os.path.realpath(raw)) if raw else ""
         if fn and any(fn.startswith(r_.rstrip("\\/") + os.sep) for r_ in roots):
             raise InventorError(f"won't save: the changed part {fn} is in a protected folder ({fn}); undo that "
                                 "change or save the assembly's parts elsewhere first")
+        if raw:
+            files.append(raw)
+    check_scope(files, "save the changed documents it uses:")
 
 
 def guarded_save(d) -> None:
@@ -487,6 +518,7 @@ def save_document(s: Session, path: str = "", list_only: bool = False, supersede
             _guard_write(path, "move")
             out["superseded"] = supersede_file(path)
         _release_path(s, d, path)
+        _guard_dependents(d)                 # Save As also saves the changed documents it uses, where they are
         try:
             with _silent(s):
                 d.SaveAs(path, False)
@@ -494,6 +526,7 @@ def save_document(s: Session, path: str = "", list_only: bool = False, supersede
             # drawings started from a DWG template can only be saved as Inventor DWG
             if s.kind(d) == "drawing" and path.lower().endswith(".idw"):
                 path = path[:-4] + ".dwg"
+                _guard_write(path)           # a different file from the one checked above
                 with _silent(s):
                     d.SaveAs(path, False)
                 return {"saved": safe(lambda: d.FullFileName, path), "documents": pending, **out,

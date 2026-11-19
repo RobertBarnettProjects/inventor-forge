@@ -2,10 +2,77 @@
 is created, protected folders and read-only files are refused, and nothing is written in read-only mode."""
 from __future__ import annotations
 
+import contextvars
 import glob
+import json
 import os
+import tempfile
 
 from .com import InventorError
+
+NEEDS_MARK = "cad/needs_approval:"      # a refusal ends with this marker and a JSON list of the paths concerned
+_SCOPE: contextvars.ContextVar = contextvars.ContextVar("inventor_forge_write_scope", default=None)
+
+
+class NeedsApproval(InventorError):
+    """A write outside the folders and files the client allowed for this call."""
+
+
+def scope_from_meta(meta) -> dict | None:
+    """The write scope a client sent with a call (_meta "cad/write_scope": {"dirs": [...], "files": [...]}), or None
+    when it sent none (then only the protected-folder rules apply). A malformed scope allows nothing extra."""
+    if not isinstance(meta, dict) or "cad/write_scope" not in meta:
+        return None
+    sc = meta.get("cad/write_scope")
+    if not isinstance(sc, dict):
+        return {"dirs": [], "files": []}
+    return {k: [str(x) for x in (sc.get(k) or []) if isinstance(x, str) and x.strip()] if isinstance(sc.get(k), list)
+            else [] for k in ("dirs", "files")}
+
+
+def use_scope(scope: dict | None):
+    """Set the write scope for the calls made in this thread; returns the token for reset_scope."""
+    return _SCOPE.set(scope)
+
+
+def reset_scope(token) -> None:
+    _SCOPE.reset(token)
+
+
+def current_scope() -> dict | None:
+    return _SCOPE.get()
+
+
+def _norm(p: str) -> str:
+    return os.path.normcase(os.path.realpath(p))
+
+
+def outside_scope(paths) -> list[str]:
+    """The paths (resolved, links followed) that the current call's scope doesn't cover. Forge's own temporary files
+    are always allowed. Empty when the client sent no scope."""
+    sc = _SCOPE.get()
+    if sc is None:
+        return []
+    dirs = [_norm(d) for d in sc.get("dirs") or []] + [_norm(tempfile.gettempdir())]
+    files = {_norm(f) for f in sc.get("files") or []}
+    out = []
+    for p in paths:
+        rp = _norm(p)
+        if rp in files or any(rp == d or rp.startswith(d.rstrip("\\/") + os.sep) for d in dirs):
+            continue
+        if os.path.realpath(p) not in out:
+            out.append(os.path.realpath(p))
+    return out
+
+
+def check_scope(paths, what: str = "write") -> None:
+    """Refuse, before anything is written, when any of these paths is outside the call's scope. The refusal names
+    every such path, so the client can ask the user about all of them at once and send the call again."""
+    out = outside_scope(paths)
+    if out:
+        raise NeedsApproval(f"won't {what} {'; '.join(out)}: outside the folders this call may write to without the "
+                            "user's approval. Nothing was written. Send the same call again: the client asks the user "
+                            f"about these paths first.\n{NEEDS_MARK} {json.dumps(out)}")
 
 
 def read_only() -> bool:
@@ -38,6 +105,7 @@ def guard(path: str, what: str = "write") -> None:
                                 "or a folder listed in INVENTOR_FORGE_PROTECTED). Save a copy elsewhere with a path")
     if os.path.exists(path) and not os.access(path, os.W_OK):
         raise InventorError(f"won't {what} {path}: the file is read-only (checked in, or a library part)")
+    check_scope([path], what)
 
 
 def output_path(workdir: str, path: str, sub: str, ext: str = "", what: str = "write") -> str:

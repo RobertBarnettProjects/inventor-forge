@@ -61,8 +61,16 @@ report parser are plain Python.
   the result against a hand calculation; a feature that doesn't change the volume is flagged.
 - **Direction-agnostic cuts and holes.** Cut extrusions and holes try the side that actually removes
   material, so the agent doesn't have to know Inventor's sketch-normal conventions.
+- **Built for clients that build on it.** Each tool's `_meta` carries a `cad/*` profile: whether it changes the
+  model's shape, takes over the mouse and keyboard, or runs code; which arguments name files it writes or reads; and
+  how long a call may take for the arguments given. `initialize` advertises it under
+  `capabilities.experimental["cad/profile"]`. A client can then refresh previews, warn the user, sandbox writes and
+  size its waits without hard-coding any of it (`inventor_forge/profile.py`).
+- **Progress while it works.** A call that carries an MCP progress token gets a progress notification every 10 s
+  saying what the tool is doing (a solve's elapsed time, the case of a batch), so a client can tell a long solve
+  from a stuck server.
 
-## Tools (202)
+## Tools (205)
 
 Full reference with arguments: [TOOLS.md](TOOLS.md).
 
@@ -210,9 +218,12 @@ not affiliated with or endorsed by Autodesk.
 |---|---|
 | `INVENTOR_FORGE_READ_ONLY=1` | Refuse every tool that changes a model, and every file write (exports, CSV, screenshots). |
 | `INVENTOR_FORGE_TOOLSETS=sketch,features,drawing` | Offer only these tool groups (system and session tools stay). |
-| `INVENTOR_FORGE_PROTECTED=C:ault;D:
-eleased` | Never save or export into these folders (Autodesk's library, template and install folders are always protected). |
+| `INVENTOR_FORGE_PROTECTED=C:\Vault;D:\Released` | Never save or export into these folders (Autodesk's library, template and install folders are always protected). |
 | `INVENTOR_FORGE_DEBUG=1` | Extra diagnostics on stderr. |
+| `INVENTOR_FORGE_WORKDIR=<folder>` | Where relative output paths go (default `~/Documents/inventor-forge`). |
+| `INVENTOR_FORGE_VISIBLE=0` | Start Inventor hidden when it isn't running (same as `--hidden`). |
+| `INVENTOR_FORGE_MAX_SOLVES=2` | Solves allowed at once on the PC. |
+| `INVENTOR_FORGE_MIN_FREE_GB=6` | Free memory a solve needs to start beside others. |
 
-Each tool's `_meta["inventor-forge/files"]` in `tools/list` says which arguments it writes or reads, for clients
-that sandbox file access.
+Each tool's `_meta["cad/files"]` in `tools/list` says which arguments it writes or reads, for clients that sandbox
+file access (also published as `inventor-forge/files`).

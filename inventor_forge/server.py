@@ -12,11 +12,14 @@ import base64
 import json
 import os
 import sys
+import threading
+import time
 import traceback
 
 from . import __version__
 from .com import InventorError
 from .engine import Forge, tool_enabled
+from .profile import PROGRESS_EVERY, server_profile, tool_meta
 from .registry import DESTRUCTIVE
 
 PROTOCOL = "2025-06-18"
@@ -43,16 +46,10 @@ INSTRUCTIONS = (
 )
 
 
-def _file_meta(name: str) -> dict:
-    """Which arguments name files this tool writes or reads (for clients that sandbox writes)."""
-    from .fileargs import NAMES, READS, WRITES
-    meta = {k: list(v[name]) for k, v in (("writes", WRITES), ("reads", READS), ("names", NAMES)) if name in v}
-    return {"_meta": {"inventor-forge/files": meta}} if meta else {}
-
-
 class Server:
-    def __init__(self, visible: bool = True):
+    def __init__(self, visible: bool = True, emit=None):
         self.forge = Forge(visible=visible)
+        self.emit = emit or (lambda msg: None)     # sends a notification to the client (thread-safe)
 
     def tools_list(self) -> list[dict]:
         out = []
@@ -62,10 +59,36 @@ class Server:
             out.append({"name": t.name, "description": t.description, "inputSchema": t.schema,
                         "annotations": {"readOnlyHint": not t.mutates,
                                         "destructiveHint": t.name in DESTRUCTIVE},
-                        **_file_meta(t.name)})
+                        "_meta": tool_meta(t)})
         return out
 
-    def tools_call(self, name: str, args: dict) -> dict:
+    def _heartbeat(self, name: str, token, stop: threading.Event) -> None:
+        """MCP progress notifications while a call runs: the client knows the server is alive and working, and can
+        show what it is doing (a long solve sets session.progress), instead of guessing from a fixed timeout."""
+        t0 = time.monotonic()
+        n = 0
+        while not stop.wait(PROGRESS_EVERY):
+            n += 1
+            elapsed = time.monotonic() - t0
+            doing = str(getattr(self.forge.session, "progress", "") or "").strip()
+            self.emit({"jsonrpc": "2.0", "method": "notifications/progress",
+                       "params": {"progressToken": token, "progress": n,
+                                  "message": f"{name}: {doing or 'working'} ({elapsed:.0f} s)"}})
+
+    def tools_call(self, name: str, args: dict, token=None) -> dict:
+        stop = threading.Event()
+        if token is not None:
+            threading.Thread(target=self._heartbeat, args=(name, token, stop), daemon=True).start()
+        try:
+            return self._tools_call(name, args)
+        finally:
+            stop.set()
+            try:
+                self.forge.session.progress = ""
+            except Exception:
+                pass
+
+    def _tools_call(self, name: str, args: dict) -> dict:
         try:
             res = self.forge.call(name, args)
             content = [{"type": "text", "text": json.dumps(res, ensure_ascii=False, default=str)}]
@@ -92,13 +115,15 @@ class Server:
         try:
             if method == "initialize":
                 result = {"protocolVersion": params.get("protocolVersion", PROTOCOL),
-                          "capabilities": {"tools": {"listChanged": False}, "resources": {}},
+                          "capabilities": {"tools": {"listChanged": False}, "resources": {},
+                                           "experimental": {"cad/profile": server_profile()}},
                           "serverInfo": {"name": "inventor-forge", "version": __version__},
                           "instructions": INSTRUCTIONS}
             elif method == "tools/list":
                 result = {"tools": self.tools_list()}
             elif method == "tools/call":
-                result = self.tools_call(params.get("name", ""), params.get("arguments") or {})
+                token = (params.get("_meta") or {}).get("progressToken")
+                result = self.tools_call(params.get("name", ""), params.get("arguments") or {}, token)
             elif method == "ping":
                 result = {}
             elif method == "resources/list":
@@ -128,7 +153,19 @@ def main(argv: list[str] | None = None) -> None:
     stdin = sys.stdin.buffer
     stdout = sys.stdout.buffer
     sys.stdout = sys.stderr            # stray prints must never corrupt the protocol stream
-    server = Server(visible="--hidden" not in argv)
+    lock = threading.Lock()
+
+    def emit(msg: dict) -> None:
+        data = (json.dumps(msg, ensure_ascii=False, default=str) + "\n").encode("utf-8")
+        with lock:                     # replies and progress notifications never interleave
+            try:
+                stdout.write(data)
+                stdout.flush()
+            except (OSError, ValueError):
+                pass
+
+    visible = "--hidden" not in argv and os.environ.get("INVENTOR_FORGE_VISIBLE", "1").strip() not in ("0", "false", "no")
+    server = Server(visible=visible, emit=emit)
     for raw in stdin:
         raw = raw.strip()
         if not raw:
@@ -140,8 +177,7 @@ def main(argv: list[str] | None = None) -> None:
         batch = msg if isinstance(msg, list) else [msg]
         replies = [r for r in (server.handle(m) for m in batch) if r is not None]
         for rep in replies:
-            stdout.write((json.dumps(rep, ensure_ascii=False, default=str) + "\n").encode("utf-8"))
-            stdout.flush()
+            emit(rep)
 
 
 if __name__ == "__main__":

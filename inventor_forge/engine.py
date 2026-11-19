@@ -93,27 +93,19 @@ def tool_enabled(t) -> bool:
 def _dialog_text(dialogs) -> str:
     return "; ".join(f"'{d.get('title', '')}'" + (f" says \"{d['text']}\"" if d.get("text") else "")
                      + (f" [buttons: {', '.join(d['buttons'])}]" if d.get("buttons") else "") for d in dialogs or [])                     # s: how long a call may hold the COM thread, unless the tool says otherwise
-BATCH_ARGS = {"cases": None, "fractions": 3}   # list arguments that repeat a tool's own timeout (default count)
 
 
 def call_budget(fn, args: dict, default: float | None = DEFAULT_WAIT) -> float | None:
     """How long to wait for a tool. A tool with its own timeout argument (a solve) gets that, once per case or mesh
     size for batch tools, plus time for the copying, reading and saving around it, so the wait never ends before
-    the tool's own limit does (a solve allowed 3600 s used to be cut off by the 1800 s default)."""
-    sig = inspect.signature(fn).parameters
-    if "timeout" not in sig or default is None:
+    the tool's own limit does. The rule is profile.budget_for, the one published to clients as cad/budget."""
+    if default is None:
+        return None
+    from .profile import _budget, budget_for
+    meta = _budget(fn)
+    if not meta.get("timeout_arg"):
         return default
-    own = args.get("timeout", sig["timeout"].default)
-    try:
-        own = float(own)
-    except (TypeError, ValueError):
-        return default
-    n = 1
-    for name, fallback in BATCH_ARGS.items():
-        if name in sig:
-            v = args.get(name)
-            n = max(n, len(v) if isinstance(v, (list, tuple)) else (fallback or 1))
-    return max(default, n * (own + 600.0) + 300.0)
+    return max(default, budget_for({**meta, "floor_s": default}, args))
 
 
 def _is_busy(e: BaseException) -> bool:

@@ -99,7 +99,10 @@ class Session:
         self.pinned_pid: int | None = None     # the Inventor this session chose at connect; never silently another
         self.hwnd: int | None = None           # its main window, for hang checks made without COM
         self.private = False                   # True when this session started its own Inventor process
-        self.workdir = os.path.join(os.path.expanduser("~"), "Documents", "inventor-forge")
+        # relative output paths land here; a client gives its own job folder with INVENTOR_FORGE_WORKDIR
+        self.workdir = (os.environ.get("INVENTOR_FORGE_WORKDIR", "").strip()
+                        or os.path.join(os.path.expanduser("~"), "Documents", "inventor-forge"))
+        self.progress = ""                     # what a long tool is doing now (sent to clients as progress)
         self.standard: str | None = None       # chosen by the user for this session (set_standard); None = not asked yet
         self.drawing_units = "mm"
 

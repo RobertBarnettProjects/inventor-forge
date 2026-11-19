@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "inventor-forge"
-version = "0.1.0"
+version = "0.2.0"
 description = "Autodesk Inventor for AI agents: an MCP server with 100+ COM-driven tools (parts, sheet metal, assemblies, drawings with QA, stress/modal analysis)"
 readme = "README.md"
 license = { text = "MIT" }

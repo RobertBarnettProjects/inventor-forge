@@ -10,7 +10,7 @@ readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "Robert Barnett" }]
 requires-python = ">=3.10"
-dependencies = ["pywin32>=306; sys_platform == 'win32'"]
+dependencies = ["pywin32>=306,<400; sys_platform == 'win32'"]
 classifiers = ["Operating System :: Microsoft :: Windows", "Topic :: Scientific/Engineering"]
 
 [project.scripts]

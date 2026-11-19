@@ -14,7 +14,7 @@
   Inventor started afterwards.
 - End processes by the PID recorded when they started, never by image name: a name match can end the user's copy.
 - `close_private_inventor` closes the documents, then ends the process: asking Inventor to quit after drawing work
-  has crashed it on the way out and left an error-report window on the user's screen.
+  can crash it on the way out, leaving an error-report window on the user's screen.
 - Check which documents are open, not just whether an Inventor process exists: the user may have closed a file
   and left Inventor running.
 - Elevated windows (Task Manager, installers) block cursor moves and focus changes; mouse-driven tools check first.

@@ -1086,8 +1086,11 @@ def weld_body(s: Session, runs: list[dict], name: str = "weld_body") -> dict:
             d = s.delta(w["name"], before)
             want = w["area"] * w["L"]
             got = d.get("volume_change_mm3", d.get("dV_mm3"))
-            row = {"name": w["name"], "length_mm": r(w["L"], 1), "leg_mm": w["leg"], "angle_deg": w["angle_deg"],
-                   "volume_mm3": got, "expected_mm3": r(want, 1)}
+            actual = safe(lambda body=body: body.Name, "") if body is not None else ""
+            row = {"name": actual or w["name"], "length_mm": r(w["L"], 1), "leg_mm": w["leg"],
+                   "angle_deg": w["angle_deg"], "volume_mm3": got, "expected_mm3": r(want, 1)}
+            if actual and actual != w["name"]:
+                row["note"] = f"Inventor kept the name {actual!r} (another body or feature already has {w['name']!r})"
             if isinstance(got, (int, float)) and want and abs(got - want) / want > 0.02:
                 row["check"] = ("volume differs from leg^2/2 x length by more than 2%: the sweep may have twisted or "
                                 "met other geometry")
@@ -1097,7 +1100,9 @@ def weld_body(s: Session, runs: list[dict], name: str = "weld_body") -> dict:
         tx.Abort()
         raise
     total = sum(w["area"] * w["L"] for w in ws)
-    out = {"welds": made, "runs": len(made), "total_volume_mm3": r(total, 1),
+    measured = [m["volume_mm3"] for m in made if isinstance(m.get("volume_mm3"), (int, float))]
+    out = {"welds": made, "runs": len(made), "expected_volume_mm3": r(total, 1),
+           "measured_volume_mm3": r(sum(measured), 1) if len(measured) == len(made) else None,
            "next": "mass_properties for the weld mass; check_interference / body_gap that each weld touches both parts"}
     checks = [m["name"] for m in made if m.get("check")]
     if checks:

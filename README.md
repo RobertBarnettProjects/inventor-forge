@@ -185,8 +185,9 @@ hangs, COM binding, unattended runs), modelling, assemblies, stress-analysis, dr
 ## Verified
 
 `tests/` — run with `python -m pytest tests/test_offline.py` (no Inventor needed) and the live `smoke_*.py`
-scripts, which exercise the tools against real Inventor with hand-calculated checks (only `smoke_fea.py` uses
-the mouse):
+scripts, which exercise the tools against real Inventor with hand-calculated checks (the ones that call
+`analyze_stress` or `analyze_modes`, such as `smoke_fea.py`, `smoke_fea2.py` and `smoke_full.py`, take over the mouse
+and keyboard while they run):
 
 | Check | Result |
 |---|---|

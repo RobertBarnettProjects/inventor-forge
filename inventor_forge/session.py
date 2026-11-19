@@ -31,6 +31,9 @@ def restore_environment() -> list[str]:
     have = {k.upper() for k in os.environ}
     added = []
     for k, v in full.items():
+        # only what Windows and Inventor need: a client that left out keys or tokens did so on purpose
+        if any(w in k.upper() for w in ("KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL", "AUTH")):
+            continue
         if k and not k.startswith("=") and k.upper() not in have:
             os.environ[k] = v
             added.append(k)
@@ -193,10 +196,14 @@ class Session:
                 if pid not in new:
                     raise InventorError("could not start a separate Inventor (its process could not be identified); "
                                         "the Inventor this call started was closed again and nothing else was touched")
-                app.Visible = True
+                app.Visible = bool(self.visible)
             except BaseException:
-                safe(lambda: setattr(late(raw), "SilentOperation", True))
-                safe(lambda: late(raw).Quit())
+                # quit only an Inventor this call is known to have started: one of the new processes
+                started = set(pids_named("Inventor.exe")) - before
+                theirs = self._process_id(late(raw))
+                if theirs is not None and theirs in started:
+                    safe(lambda: setattr(late(raw), "SilentOperation", True))
+                    safe(lambda: late(raw).Quit())
                 raise
         self._app, self.pid, self.private = app, pid, True
         self.pinned_pid = pid

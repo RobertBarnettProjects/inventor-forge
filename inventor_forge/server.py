@@ -47,9 +47,10 @@ INSTRUCTIONS = (
 
 
 class Server:
-    def __init__(self, visible: bool = True, emit=None):
+    def __init__(self, visible: bool = True, emit=None, lock=None):
         self.forge = Forge(visible=visible)
-        self.emit = emit or (lambda msg: None)     # sends a notification to the client (thread-safe)
+        self.emit = emit or (lambda msg, alive=None: None)   # sends a notification to the client (thread-safe)
+        self.lock = lock or threading.Lock()                  # the writer's lock
 
     def tools_list(self) -> list[dict]:
         out = []
@@ -71,9 +72,12 @@ class Server:
             n += 1
             elapsed = time.monotonic() - t0
             doing = str(getattr(self.forge.session, "progress", "") or "").strip()
+            # sent only while the call is still running, checked under the writer's lock, so a progress
+            # notification can never follow the call's own reply
             self.emit({"jsonrpc": "2.0", "method": "notifications/progress",
                        "params": {"progressToken": token, "progress": n,
-                                  "message": f"{name}: {doing or 'working'} ({elapsed:.0f} s)"}})
+                                  "message": f"{name}: {doing or 'working'} ({elapsed:.0f} s)"}},
+                      alive=lambda: not stop.is_set())
 
     def tools_call(self, name: str, args: dict, token=None) -> dict:
         stop = threading.Event()
@@ -82,7 +86,8 @@ class Server:
         try:
             return self._tools_call(name, args)
         finally:
-            stop.set()
+            with self.lock:                # no heartbeat is mid-write once this is set
+                stop.set()
             try:
                 self.forge.session.progress = ""
             except Exception:
@@ -155,9 +160,11 @@ def main(argv: list[str] | None = None) -> None:
     sys.stdout = sys.stderr            # stray prints must never corrupt the protocol stream
     lock = threading.Lock()
 
-    def emit(msg: dict) -> None:
+    def emit(msg: dict, alive=None) -> None:
         data = (json.dumps(msg, ensure_ascii=False, default=str) + "\n").encode("utf-8")
         with lock:                     # replies and progress notifications never interleave
+            if alive is not None and not alive():
+                return
             try:
                 stdout.write(data)
                 stdout.flush()
@@ -165,7 +172,7 @@ def main(argv: list[str] | None = None) -> None:
                 pass
 
     visible = "--hidden" not in argv and os.environ.get("INVENTOR_FORGE_VISIBLE", "1").strip() not in ("0", "false", "no")
-    server = Server(visible=visible, emit=emit)
+    server = Server(visible=visible, emit=emit, lock=lock)
     for raw in stdin:
         raw = raw.strip()
         if not raw:

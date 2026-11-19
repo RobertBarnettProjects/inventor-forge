@@ -25,7 +25,7 @@ PROFILE_VERSION = 1
 PROGRESS_EVERY = 10.0           # s between progress notifications during a call
 FLOOR_S = 1800.0                # s a call may hold the COM thread unless the tool says otherwise (engine.DEFAULT_WAIT)
 PER_ITEM_S = 600.0
-EXTRA_S = 300.0
+EXTRA_S_DEFAULT = 300.0
 REPEAT_ARGS = {"cases": None, "fractions": 3}   # list arguments that repeat a tool's own time limit (default count)
 
 # tools that change the model's shape (a preview of the model is out of date after them)
@@ -37,8 +37,19 @@ GEOMETRY = {
     "parametric_extrusion", "split_faces", "link_parameters", "activate_model_state", "set_component_model_state",
     "sheet_metal_face", "flange", "sheet_metal_cut", "set_sheet_metal_thickness", "place_component",
     "add_constraint", "move_component", "pattern_component", "frame_members", "tube_frame", "create_material",
-    "set_appearance", "repair_import", "batch", "pose_bodies", "copy_assembly",
+    "set_appearance", "repair_import", "batch", "pose_bodies", "copy_assembly", "weld_body",
 }
+
+# tools that delete something that can't be brought back when an argument says so (the client asks the user first)
+DELETES: dict[str, object] = {
+    "purge_studies": {"if_args": {"confirm": True}},
+    "clean_analysis_scratch": {"if_args": {"confirm": True}},
+    "delete_study_item": True,
+}
+
+# tools whose own time limit covers only part of the call (a solve inside a longer set-up): extra seconds on top
+EXTRA_S = {"analyze_stress": 1800.0, "analyze_modes": 1800.0, "mesh_convergence": 900.0}
+SOLVE_S = {"analyze_stress": 3600.0, "analyze_modes": 3600.0}   # solves inside tools that take no timeout
 
 # tools that drive Inventor's windows with the mouse and keyboard (Stress Analysis has no API for these steps)
 TAKES_INPUT: dict[str, object] = {
@@ -53,10 +64,14 @@ RUNS_CODE = {"execute_python"}
 
 def _budget(fn) -> dict:
     sig = inspect.signature(fn).parameters
+    name = fn.__name__
     b: dict = {"floor_s": FLOOR_S}
     if "timeout" in sig and sig["timeout"].default is not inspect.Parameter.empty:
         b.update(timeout_arg="timeout", timeout_default=sig["timeout"].default, per_item_s=PER_ITEM_S,
-                 extra_s=EXTRA_S, repeat_args={k: v for k, v in REPEAT_ARGS.items() if k in sig})
+                 extra_s=EXTRA_S_DEFAULT + EXTRA_S.get(name, 0.0),
+                 repeat_args={k: v for k, v in REPEAT_ARGS.items() if k in sig})
+    elif name in SOLVE_S:
+        b["floor_s"] = FLOOR_S + SOLVE_S[name] + EXTRA_S.get(name, 0.0)
     return b
 
 
@@ -73,8 +88,10 @@ def budget_for(meta: dict, args: dict) -> float:
     n = 1
     for name, fallback in (meta.get("repeat_args") or {}).items():
         v = args.get(name)
-        n = max(n, len(v) if isinstance(v, (list, tuple)) else int(fallback or 1))
-    return max(floor, n * (own + float(meta.get("per_item_s", PER_ITEM_S))) + float(meta.get("extra_s", EXTRA_S)))
+        # an empty or missing list means the tool's own default count
+        n = max(n, len(v) if isinstance(v, (list, tuple)) and v else int(fallback or 1))
+    return max(floor, n * (own + float(meta.get("per_item_s", PER_ITEM_S)))
+               + float(meta.get("extra_s", EXTRA_S_DEFAULT)))
 
 
 def tool_meta(t) -> dict:
@@ -91,6 +108,8 @@ def tool_meta(t) -> dict:
         meta["cad/takes_input"] = TAKES_INPUT[t.name]
     if t.name in RUNS_CODE:
         meta["cad/runs_code"] = True
+    if t.name in DELETES:
+        meta["cad/deletes"] = DELETES[t.name]
     return meta
 
 

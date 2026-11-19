@@ -808,8 +808,11 @@ def run_study_cases(s: Session, template: str, cases: list[dict], results_path: 
     want = results or ["Von Mises Stress", "Displacement"]
     pid = _pid(s)
     doc_name = re.sub(r"\W+", "_", s.doc().DisplayName)
+    import hashlib
+    full = str(safe(lambda: s.doc().FullFileName, "") or doc_name)
+    tag = hashlib.sha1(os.path.normcase(full).encode("utf-8")).hexdigest()[:8]   # two models may share a name
     from ..writes import output_path
-    path = output_path(s.workdir, results_path or f"{doc_name}_cases.json", "studies", ".json")
+    path = output_path(s.workdir, results_path or f"{doc_name}_{tag}_cases.json", "studies", ".json")
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     data = _load_results(path)
     names = [c.get("name", "") for c in cases]
@@ -821,6 +824,14 @@ def run_study_cases(s: Session, template: str, cases: list[dict], results_path: 
     doc_path = safe(lambda: s.doc().FullFileName, "")
     private = s.private                       # read now: the session drops the flag the moment its Inventor dies
     reasons: list[str] = []
+    # a case named like a study this run didn't make is refused before anything is touched
+    existing = set(safe(lambda: _study_nodes(s), {}))
+    clash = [n for n in names if n in existing and data["cases"].get(n, {}).get("status") not in ("done", "failed")]
+    if clash:
+        raise InventorError(f"studies named {clash} already exist and aren't cases of this run; give those cases other "
+                            "names (nothing was changed)")
+    # finished cases are reused only while the template's inputs (geometry, loads, mesh...) are unchanged
+    tkey = safe(lambda: inputs_hash(_study_inputs(s, template)), "")
     for k, case in enumerate(cases, 1):
         name = case["name"]
         s.progress = s.progress_case = f"case {k} of {len(cases)}: {name}"
@@ -828,13 +839,24 @@ def run_study_cases(s: Session, template: str, cases: list[dict], results_path: 
         if done.get("status") == "done":
             if done.get("values", case.get("values")) != case.get("values") or done.get("template", template) != template:
                 raise InventorError(f"case {name!r} was already run with different values or template; give it a new name")
-            skipped += 1
-            continue
+            if tkey and done.get("template_inputs") not in (None, tkey):
+                # the model changed since this case was solved: solve it again
+                if name in safe(lambda: _study_nodes(s), {}):
+                    delete_study_item(s, name)
+                data["cases"].pop(name, None)
+                done = {}
+            else:
+                skipped += 1
+                continue
         if done.get("status") == "failed" and name in safe(lambda: _study_nodes(s), {}):
             safe(lambda: delete_study_item(s, name))      # a copy left by the failed attempt: start this case afresh
         while True:
+            before_attempt = set(safe(lambda: _study_nodes(s), {}))
             try:
                 _run_case(s, pid, template, case, want, timeout, data, path)
+                if tkey and name in data["cases"]:
+                    data["cases"][name]["template_inputs"] = tkey
+                    _store_results(path, data)
                 ran += 1
                 break
             except Exception as e:
@@ -846,7 +868,8 @@ def run_study_cases(s: Session, template: str, cases: list[dict], results_path: 
                     history.append(str(e)[:600])
                     data["cases"][name] = {"status": "failed", "error": history[0], "errors": history[-5:],
                                            "values": case.get("values"), "template": template}
-                    if name in safe(lambda: _study_nodes(s), {}):
+                    if name in safe(lambda: _study_nodes(s), {}) and name not in before_attempt:
+                        # only the copy this attempt made
                         data["cases"][name]["copy_removed"] = bool(safe(lambda: (delete_study_item(s, name), True)[1],
                                                                         False))
                     _store_results(path, data)
@@ -1352,6 +1375,13 @@ def clean_analysis_scratch(s: Session, idle_hours: float = 12.0, confirm: bool =
         return {**out, "deleted": False, "note": "nothing deleted: call again with confirm=true once the user agrees"}
     gone, failed = [], []
     for x in old:
+        # checked again just before each folder: a solve may have started, or the folder been used, meanwhile
+        if U.pids_named("FEAComputeServer.exe"):
+            failed.append({"path": x["path"], "error": "a solve started; stopped cleaning"})
+            break
+        again = next((y for y in scratch_folders() if y["path"] == x["path"]), None)
+        if again is None or again["idle_hours"] < idle_hours:
+            continue
         try:
             shutil.rmtree(x["path"])
             gone.append(x["path"])

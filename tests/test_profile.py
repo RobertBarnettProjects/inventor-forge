@@ -61,7 +61,7 @@ def test_heartbeat_sends_progress_until_stopped(monkeypatch):
     class _Forge:
         session = _Sess()
     s.forge = _Forge()
-    s.emit = sent.append
+    s.emit = lambda msg, alive=None: sent.append(msg) if alive is None or alive() else None
     stop = threading.Event()
     th = threading.Thread(target=s._heartbeat, args=("solve_study", 7, stop))
     th.start()

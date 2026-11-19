@@ -119,7 +119,15 @@ def close_private_inventor(s: Session) -> dict:
         time.sleep(0.5)
     if pid in U.pids_named("Inventor.exe"):
         safe(lambda: app.Quit())
-    return {"closed": pid, "solvers_ended": U.end_orphaned_solvers(pid)}
+        t0 = time.time()
+        while pid in U.pids_named("Inventor.exe") and time.time() - t0 < 60:
+            time.sleep(0.5)
+    if pid in U.pids_named("Inventor.exe"):
+        raise InventorError(f"the private Inventor (process {pid}) is still running after being ended and asked to "
+                            "quit; its documents are closed. This session is no longer attached to any Inventor: "
+                            "connect again before the next call")
+    return {"closed": pid, "solvers_ended": U.end_orphaned_solvers(pid),
+            "note": "this session is no longer attached to an Inventor; connect before the next call"}
 
 
 @tool("session", mutates=False)
@@ -453,6 +461,9 @@ def save_document(s: Session, path: str = "", list_only: bool = False, supersede
     """
     d = s.doc()
     own = safe(lambda: d.FullFileName, "")
+    if only_this and (not own or (path and not same_file(path, own))):
+        raise InventorError("only_this saves a document in place, alone; this one needs a Save As first "
+                            "(save_document with a path, without only_this)")
     if path:
         if not os.path.isabs(path):
             path = os.path.join(s.workdir, path)
@@ -463,7 +474,7 @@ def save_document(s: Session, path: str = "", list_only: bool = False, supersede
             path = ""                       # the same file: a plain save, not a Save As onto itself
     pending = pending_saves(s, d)
     if only_this:
-        pending = [x for x in pending if same_file(x["path"], own)] if own else pending[:1]
+        pending = [x for x in pending if same_file(x["path"], own)]
     if list_only:
         return {"would_save": pending, "target": path or own or "(needs a path)",
                 "save_as": bool(path), "protected": [x["path"] for x in pending if _is_protected(x["path"])]}
@@ -521,11 +532,7 @@ def close_document(s: Session, save: bool = False, name: str = "") -> dict:
     d = _find_doc(s, name) if name else s.doc()
     label = safe(lambda: d.DisplayName, "")
     if save:
-        active = s.app.ActiveDocument
-        if active is not None and s.key(d) == s.key(active):
-            save_document(s)
-        else:
-            guarded_save(d)
+        guarded_save(d)            # this very document, whichever one is active
     if getattr(s, "_current", None) is not None and s.key(d) == getattr(s, "_current_key", None):
         s.set_current(None)
     d.Close(not save)          # SkipSave

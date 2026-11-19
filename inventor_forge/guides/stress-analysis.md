@@ -58,7 +58,7 @@
   singularity to locate.
 - `study_report` checks reactions against applied forces. A solve much faster than its siblings suggests lost
   contacts.
-- Inventor's Reaction Forces dialog has crashed it; read reactions from the report.
+- Inventor's Reaction Forces dialog can crash it; read reactions from the report.
 - Before/after figures: render both from the model's own view with the same orthographic camera, so they overlay.
 
 ## Disk

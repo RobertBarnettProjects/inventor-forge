@@ -645,9 +645,12 @@ def auto_dimension_view(s: Session, view: str, arrange: bool = True) -> dict:
         n = got.Count if got is not None else 0
     except Exception as e:
         return {"retrieved": 0, "note": f"no retrievable dimensions ({e.__class__.__name__}) — add them with add_linear_dimension"}
-    removed = _drop_repeats(got) if n else 0
-    if arrange and n - removed:
-        safe(lambda: sh.DrawingDimensions.Arrange(got))
+    keep, removed = _drop_repeats(got) if n else ([], 0)
+    if arrange and keep:
+        coll = s.app.TransientObjects.CreateObjectCollection()
+        for d in keep:
+            coll.Add(d)
+        safe(lambda: sh.DrawingDimensions.Arrange(coll))
     out = {"retrieved": n - removed, "view": v.Name}
     if removed:
         out["repeats_removed"] = removed
@@ -668,25 +671,28 @@ def _span_key(d):
         way, a, b = "v", min(y1, y2), max(y1, y2)
     else:
         return None
-    return (round(safe(lambda: d.ModelValue, 0.0) * 10, 2), way, a, b)
+    text = str(safe(lambda: d.Text.FormattedText, "") or safe(lambda: d.Text.Text, ""))   # tolerances, notes
+    return (round(safe(lambda: d.ModelValue, 0.0) * 10, 2), way, a, b, text)
 
 
-def _drop_repeats(dims) -> int:
+def _drop_repeats(dims) -> tuple[list, int]:
     """Delete retrieved dimensions that repeat another: the same value over the same span in the same direction.
     Parts made of several bodies or sketches retrieve one per body or sketch (two plates both 200 long give two
     200s side by side), which says nothing more and crowds the view."""
-    seen, n = set(), 0
+    seen, keep, n = set(), [], 0
     for d in list(items(dims)):
         k = _span_key(d)
         if k is None:
+            keep.append(d)
             continue
-        near = next((x for x in seen if x[:2] == k[:2] and abs(x[2] - k[2]) <= 1 and abs(x[3] - k[3]) <= 1), None)
-        if near is not None:
-            if safe(lambda d=d: (d.Delete(), True)[1], False):
-                n += 1
+        near = next((x for x in seen if x[:2] == k[:2] and x[4] == k[4]
+                     and abs(x[2] - k[2]) <= 1 and abs(x[3] - k[3]) <= 1), None)
+        if near is not None and safe(lambda d=d: (d.Delete(), True)[1], False):
+            n += 1
             continue
         seen.add(k)
-    return n
+        keep.append(d)
+    return keep, n
 
 
 @tool("drawing")
@@ -2285,6 +2291,12 @@ def add_custom_table(s: Session, title: str, columns: list[str], rows: list[list
         raise InventorError(f"rows {bad} don't have {len(cols)} values (one per column)")
     if column_widths is not None and len(column_widths) != len(cols):
         raise InventorError("column_widths needs one width per column")
+    try:
+        widths = [float(w) for w in column_widths] if column_widths else []
+    except (TypeError, ValueError):
+        raise InventorError("column_widths are numbers in mm") from None
+    if any(not (2 <= w <= 500) for w in widths):
+        raise InventorError("each column width must be between 2 and 500 mm")
     sh = _sheet(s)
     g = _region(sh)
     if not (x or y):
@@ -2297,9 +2309,12 @@ def add_custom_table(s: Session, title: str, columns: list[str], rows: list[list
     for ri, row in enumerate(body, 1):
         for ci, v in enumerate(row, 1):
             t.Rows.Item(ri).Item(ci).Value = v
-    if column_widths:
-        for ci, wmm in enumerate(column_widths, 1):
-            t.Columns.Item(ci).Width = float(wmm) * MM
+    for ci, wmm in enumerate(widths, 1):
+        try:
+            t.Columns.Item(ci).Width = wmm * MM
+        except Exception as e:
+            safe(lambda: t.Delete())          # don't leave a half-made table behind
+            raise InventorError(f"add_custom_table: column {ci} width not accepted: {e}") from e
     wrong = [(ri, ci) for ri, row in enumerate(body, 1) for ci, v in enumerate(row, 1)
              if str(safe(lambda ri=ri, ci=ci: t.Rows.Item(ri).Item(ci).Value, "")) != v]
     rb = t.RangeBox                                         # keep the whole table on the sheet

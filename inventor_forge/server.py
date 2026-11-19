@@ -57,9 +57,13 @@ class Server:
         """Close the private Inventor this session started (left open and shown if it holds unsaved changes)."""
         from .tools.docs import finish_session
         try:
-            finish_session(self.forge.session)
-        except Exception:  # noqa: BLE001
-            pass
+            # on the thread that owns the session's COM objects: they can't be used from this one
+            out = self.forge.apartment.submit(lambda: finish_session(self.forge.session)).result(timeout=150)
+            if out.get("left_open"):
+                print(f"inventor-forge: left Inventor {out['left_open']} open: unsaved {out.get('unsaved')}",
+                      file=sys.stderr)
+        except Exception as e:  # noqa: BLE001
+            print(f"inventor-forge: closing the session's Inventor failed: {e}", file=sys.stderr)
 
     def tools_list(self) -> list[dict]:
         out = []

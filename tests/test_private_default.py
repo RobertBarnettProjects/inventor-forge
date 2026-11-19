@@ -72,3 +72,17 @@ def test_asking_for_the_users_inventor_drops_the_preference(monkeypatch):
     except Stop:
         pass
     assert s.prefer_private is False and "private" not in seen
+
+
+def test_the_server_tidies_up_on_the_inventor_thread(monkeypatch):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    from inventor_forge.server import Server
+    srv = Server(visible=False)
+    pool = ThreadPoolExecutor(1, thread_name_prefix="inventor-sta")
+    monkeypatch.setattr(srv.forge, "apartment", pool)
+    seen = []
+    monkeypatch.setattr(docs, "finish_session", lambda s: seen.append(threading.current_thread().name) or {})
+    srv.finish()
+    pool.shutdown()
+    assert seen and seen[0].startswith("inventor-sta")

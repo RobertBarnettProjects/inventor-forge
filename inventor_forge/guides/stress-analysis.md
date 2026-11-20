@@ -2,7 +2,7 @@
 
 ## Before solving
 - Hand-check loads, load paths and stability first. Decide which loads are global: a self-equilibrating preload
-  (a tie-down pulling a lug up and the payload down) adds nothing to global bending.
+  (a bolt preload clamping two plates together) adds nothing to global bending.
 - After any geometry change, update the mesh before generating automatic contacts (`update_contacts` does both).
   Automatic contacts use the last mesh: new parts get no contacts and nothing says so.
 - Contacts between parts that no longer touch stay in the list. Delete only after measuring that they are apart

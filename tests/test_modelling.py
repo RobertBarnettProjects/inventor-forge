@@ -20,11 +20,11 @@ I = sys.modules["inventor_forge.tools.inspect"]
 def test_copy_renames_file_names_only():
     assert A.renamed("SK1_Base.ipt", "SK2_", "SK1_") == "SK2_Base.ipt"
     assert A.renamed("Base.ipt", "SK2_") == "SK2_Base.ipt"
-    root = r"C:\jobs\SK1_skid"
-    plan = A.copy_plan([r"C:\jobs\SK1_skid\SK1_frame.iam", r"C:\jobs\SK1_skid\SK1_parts\SK1_plate.ipt",
-                        r"C:\Library\bolt.ipt"], root, r"D:\out\SK2_skid", "SK2_", "SK1_")
+    root = r"C:\jobs\SK1_job"
+    plan = A.copy_plan([r"C:\jobs\SK1_job\SK1_frame.iam", r"C:\jobs\SK1_job\SK1_parts\SK1_plate.ipt",
+                        r"C:\Library\bolt.ipt"], root, r"D:\out\SK2_job", "SK2_", "SK1_")
     vals = sorted(plan.values())
-    assert vals == [r"D:\out\SK2_skid\SK1_parts\SK2_plate.ipt", r"D:\out\SK2_skid\SK2_frame.iam"]
+    assert vals == [r"D:\out\SK2_job\SK1_parts\SK2_plate.ipt", r"D:\out\SK2_job\SK2_frame.iam"]
     # the sub-folder keeps its name even though it starts with the old prefix; library files aren't copied
     assert not any("bolt" in v for v in vals)
 

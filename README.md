@@ -222,7 +222,7 @@ while they run.
 | Gravity (live) | reaction 2.31 N = part weight, equilibrium 0.0 % |
 | Beam fixed at both ends (live) | reaction 1000 N, deflection 0.0247 vs 0.024 mm |
 | Plate fixed by the wall of a hole (live) | reaction moment 3.9993 vs 4.0 N·m |
-| Report parser (offline, real anonymised 3-study report) | reads the requested study, not the first |
+| Report parser (offline, an Inventor report with three studies) | reads the requested study, not the first |
 | Sheet-metal tray 100 × 60 × 2 + 25 mm flange | flat pattern 100 × 81.5 mm, DXF written |
 | Base plate + 2 pins, mate + flush | constraints healthy, interference clear, BOM 1 + 2 |
 | Part sheet / GA sheet | QA 0 issues, PDF exported |

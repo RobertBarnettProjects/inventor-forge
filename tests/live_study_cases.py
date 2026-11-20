@@ -1,4 +1,4 @@
-"""Live retest from the 2026-11-12 review: with a gen_py cache for Inventor in place, open a copy of a model that
+"""Live: with a gen_py cache for Inventor in place, open a copy of a model that
 has a load study, run two cases with run_study_cases and read the values back from each copy. Private Inventor;
 no mouse or keyboard (the copies are made through Inventor's own command, which needs no face picks).
 
@@ -24,7 +24,7 @@ def expect(name, cond, info=""):
         FAIL.append(name)
 
 
-# the trap the review found: an early-bound cache for Inventor's type library
+# an early-bound cache for Inventor's type library, which changes how some calls bind
 from win32com.client import gencache  # noqa: E402
 try:
     gencache.EnsureModule("{D98A091D-3A0F-4C3E-B36E-61F62068D488}", 0, 1, 0)

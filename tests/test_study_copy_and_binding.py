@@ -1,7 +1,7 @@
-"""Offline tests for the fixes from the 2026-11-12 review: study-copy parameter mapping, the COM wait budget,
+"""Offline tests: study-copy parameter mapping, the COM wait budget,
 late binding that survives a gen_py cache, and the mouse readiness check. No Inventor needed.
 
-    python -m pytest tests/test_review_fixes.py
+    python -m pytest tests/test_study_copy_and_binding.py
 """
 import os
 import sys

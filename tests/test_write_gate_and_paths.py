@@ -1,4 +1,4 @@
-"""Offline tests for the fixes of the 20 Nov review: whose solver processes may be ended, writes that skipped the
+"""Offline tests: whose solver processes may be ended, writes that skipped the
 write gate, relative paths, the part template choice and malformed MCP messages. Inventor is replaced by fakes."""
 import os
 from types import SimpleNamespace

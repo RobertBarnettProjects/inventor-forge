@@ -18,15 +18,15 @@ F = sys.modules["inventor_forge.tools.fea"]
 
 
 def test_contacts_per_component_and_stale_pairs():
-    rows = [{"contact": "Bonded:1 [Deck:1, Lug:1]", "type": "Bonded"},
-            {"contact": "Bonded:2 [Deck:1, Lug:10]", "type": "Bonded"},
-            {"contact": "Separation:1 [Deck:1, Doubler:1]", "type": "Separation"}]
-    comps = ["Deck:1", "Lug:1", "Lug:10", "Doubler:1", "Weld:1"]
-    gaps = {("Deck:1", "Lug:10"): 5.0}
+    rows = [{"contact": "Bonded:1 [Plate:1, Tab:1]", "type": "Bonded"},
+            {"contact": "Bonded:2 [Plate:1, Tab:10]", "type": "Bonded"},
+            {"contact": "Separation:1 [Plate:1, Pad:1]", "type": "Separation"}]
+    comps = ["Plate:1", "Tab:1", "Tab:10", "Pad:1", "Weld:1"]
+    gaps = {("Plate:1", "Tab:10"): 5.0}
     rep = S.contact_report(rows, comps, lambda a, b: gaps.get((a, b), 0.0))
-    assert len(rep["by_component"]["Deck:1"]) == 3 and len(rep["by_component"]["Lug:1"]) == 1   # Lug:1 not Lug:10
+    assert len(rep["by_component"]["Plate:1"]) == 3 and len(rep["by_component"]["Tab:1"]) == 1   # Tab:1 not Tab:10
     assert rep["no_contacts"] == ["Weld:1"]
-    assert [x["contact"] for x in rep["stale"]] == ["Bonded:2 [Deck:1, Lug:10]"]
+    assert [x["contact"] for x in rep["stale"]] == ["Bonded:2 [Plate:1, Tab:10]"]
 
 
 def test_densest_red_patch_wins():

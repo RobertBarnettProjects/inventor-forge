@@ -15,7 +15,7 @@ from inventor_forge.engine import Forge  # noqa: E402
 F = Forge(visible=False)
 FAIL = []
 work = tempfile.mkdtemp(prefix="forge-asm-")
-src = os.path.join(work, "K1_skid")
+src = os.path.join(work, "K1_frame")
 
 
 def call(_tool, **a):
@@ -47,7 +47,7 @@ try:
     b = block("K1_Post", 10, 10, 40)
     c = block("K1_Cap", 30, 30, 5)
     dpart = block("FW_Weld", 5, 5, 5)
-    call("create_assembly", name="K1_Skid")
+    call("create_assembly", name="K1_Frame")
     call("place_component", path=a, grounded=True)
     st = call("add_model_state", name="WithWeld", activate=True)
     states = [x["name"] for x in st.get("states", [])]
@@ -63,13 +63,13 @@ try:
     expect("new state suppresses what it was told", r["ok"] and r.get("suppressed_in_new_state") == ["K1_Post:1"]
            and r.get("copied_from") == primary, json.dumps(r)[:300])
     r = call("place_component", path=c, x=0, y=0, z=50)
-    asm_path = os.path.join(src, "K1_Skid.iam")
+    asm_path = os.path.join(src, "K1_Frame.iam")
     r = call("save_document", path=asm_path, list_only=True)
     expect("save preview lists documents", r["ok"] and r.get("would_save"), json.dumps(r)[:300])
     call("save_document", path=asm_path)
 
     # ---- copy: the weld part is used only in an inactive state
-    dst = os.path.join(work, "K2_skid")
+    dst = os.path.join(work, "K2_frame")
     r = call("copy_assembly", folder=dst, prefix="K2_", old_prefix="K1_", check_contacts=False)
     expect("copy verified", r["ok"] and r.get("verified") is True, json.dumps(r)[:500])
     expect("inactive-state part copied, name case kept", "K2_FW_Weld.ipt" in os.listdir(dst),
@@ -78,7 +78,7 @@ try:
     r = call("referenced_files")
     expect("copy opened and points at copies", r["ok"] and all(dst.lower() in f.lower() for f in r.get("files", [])),
            json.dumps(r.get("files", []))[:400])
-    new_asm = os.path.join(dst, "K2_Skid.iam")
+    new_asm = os.path.join(dst, "K2_Frame.iam")
 
     # ---- drawing helpers
     call("create_drawing", sheet_size="A3")
@@ -102,7 +102,7 @@ try:
     expect("parts list sits above the title area", r2.get("result", 0) >= 50 - 0.5, str(r2.get("result")))
 
     # ---- Superseded rebuild keeping a note moved by hand
-    dwg = os.path.join(dst, "K2_Skid GA.idw")
+    dwg = os.path.join(dst, "K2_Frame GA.idw")
     call("add_general_notes", text="CHECK WELDS", x=30, y=30)
     call("save_document", path=dwg)
     call("close_document", save=False)

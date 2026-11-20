@@ -1,4 +1,4 @@
-"""Behaviour fixed after the code review: budgets, deletions, repeated dimensions, table widths, heartbeat ordering."""
+"""Call budgets, deletions, repeated dimensions, table widths and heartbeat ordering."""
 import threading
 import types
 

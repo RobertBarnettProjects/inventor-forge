@@ -15,7 +15,7 @@ from .com import Apartment, InventorError, com_error_text, safe
 from .health import FailureMemory, HangWatch, keep_awake
 from .registry import TOOLS, load_all
 from .session import Session
-from .writes import current_scope, reset_scope, use_scope
+from .writes import current_scope, read_only, reset_scope, use_scope
 
 
 def _plain(v: Any) -> Any:
@@ -77,12 +77,8 @@ def compact(res: dict) -> dict:
 
 
 RPC_BUSY = (-2147418111, -2147417846)     # RPC_E_CALL_REJECTED, RPC_E_SERVERCALL_RETRYLATER
-DEFAULT_WAIT = 1800.0
+DEFAULT_WAIT = 1800.0      # s a call may hold the COM thread, unless the tool says otherwise
 DIALOG_GRACE = 12.0       # s a call may run before an Inventor dialog that appeared meanwhile is reported
-
-
-def read_only() -> bool:
-    return os.environ.get("INVENTOR_FORGE_READ_ONLY", "").strip().lower() in ("1", "true", "yes")
 
 
 def tool_enabled(t) -> bool:
@@ -93,7 +89,7 @@ def tool_enabled(t) -> bool:
 
 def _dialog_text(dialogs) -> str:
     return "; ".join(f"'{d.get('title', '')}'" + (f" says \"{d['text']}\"" if d.get("text") else "")
-                     + (f" [buttons: {', '.join(d['buttons'])}]" if d.get("buttons") else "") for d in dialogs or [])                     # s: how long a call may hold the COM thread, unless the tool says otherwise
+                     + (f" [buttons: {', '.join(d['buttons'])}]" if d.get("buttons") else "") for d in dialogs or [])
 
 
 def call_budget(fn, args: dict, default: float | None = DEFAULT_WAIT) -> float | None:

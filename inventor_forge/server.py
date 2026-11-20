@@ -129,9 +129,11 @@ class Server:
             return {"content": [{"type": "text", "text": f"Error: {type(e).__name__}: {e}\n{tb}"}], "isError": True}
 
     def handle(self, msg: dict) -> dict | None:
+        if not isinstance(msg, dict):          # not a JSON-RPC message: answered, never allowed to stop the server
+            return {"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "invalid request"}}
         mid = msg.get("id")
         method = msg.get("method", "")
-        params = msg.get("params") or {}
+        params = msg.get("params") if isinstance(msg.get("params"), dict) else {}
         if mid is None:          # notification
             return None
         try:
@@ -145,7 +147,11 @@ class Server:
                 result = {"tools": self.tools_list()}
             elif method == "tools/call":
                 meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else {}
-                result = self.tools_call(params.get("name", ""), params.get("arguments") or {}, meta.get("progressToken"),
+                args = params.get("arguments") or {}
+                if not isinstance(args, dict):
+                    return {"jsonrpc": "2.0", "id": mid,
+                            "error": {"code": -32602, "message": "tools/call arguments must be an object"}}
+                result = self.tools_call(str(params.get("name", "")), args, meta.get("progressToken"),
                                          scope_from_meta(meta))
             elif method == "ping":
                 result = {}
@@ -191,19 +197,22 @@ def main(argv: list[str] | None = None) -> None:
 
     visible = "--hidden" not in argv and os.environ.get("INVENTOR_FORGE_VISIBLE", "1").strip() not in ("0", "false", "no")
     server = Server(visible=visible, emit=emit, lock=lock)
-    for raw in stdin:
-        raw = raw.strip()
-        if not raw:
-            continue
-        try:
-            msg = json.loads(raw)
-        except ValueError:
-            continue
-        batch = msg if isinstance(msg, list) else [msg]
-        replies = [r for r in (server.handle(m) for m in batch) if r is not None]
-        for rep in replies:
-            emit(rep)
-    server.finish()                    # the client closed the connection: tidy up what this session started
+    try:
+        for raw in stdin:
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                msg = json.loads(raw)
+            except ValueError:
+                continue
+            batch = msg if isinstance(msg, list) else [msg]
+            replies = [r for r in (server.handle(m) for m in batch) if r is not None]
+            for rep in replies:
+                emit(rep)
+    finally:
+        server.finish()                # the client closed the connection: tidy up what this session started
+
 
 
 if __name__ == "__main__":

@@ -233,12 +233,14 @@ def create_part(s: Session, name: str = "", sheet_metal: bool = False) -> dict:
     app = s.app
     sub = SHEET_METAL_SUBTYPE if sheet_metal else None
     tpl = s.stock_template("Sheet Metal (mm).ipt" if sheet_metal else "Standard (mm).ipt")
-    try:
-        tpl = tpl or app.FileManager.GetTemplateFile(K.kPartDocumentObject, K.kMetricSystemOfMeasure,
-                                              K.kDefault_DraftingStandard, sub) if sub else \
-            app.FileManager.GetTemplateFile(K.kPartDocumentObject, K.kMetricSystemOfMeasure)
-    except Exception:
-        tpl = ""
+    if not tpl:                  # no stock template installed: the active project's own
+        try:
+            tpl = (app.FileManager.GetTemplateFile(K.kPartDocumentObject, K.kMetricSystemOfMeasure,
+                                                   K.kDefault_DraftingStandard, sub) if sub else
+                   app.FileManager.GetTemplateFile(K.kPartDocumentObject, K.kMetricSystemOfMeasure))
+        except Exception:
+            tpl = ""
+
     d = app.Documents.Add(K.kPartDocumentObject, tpl, True)
     if sheet_metal and safe(lambda: d.SubType, "") != SHEET_METAL_SUBTYPE:
         d.SubType = SHEET_METAL_SUBTYPE
@@ -277,9 +279,11 @@ def _outside_project(s: Session, path: str) -> bool:
 def open_document(s: Session, path: str) -> dict:
     """Open an Inventor file (.ipt .iam .idw .dwg) or import STEP/IGES/SAT, and activate it. Opens in Inventor's
     silent mode, so a file outside the active project, or with missing references, can't stop at a prompt."""
-    path = os.path.abspath(os.path.expanduser(path))
+    from ..writes import input_path
+    path = input_path(s.workdir, path)
     if not os.path.exists(path):
         raise InventorError(f"file not found: {path}")
+
     with _silent(s), _dialog_watchdog(s) as dog:
         d = s.app.Documents.Open(path, True)
     d.Activate()
@@ -444,7 +448,8 @@ def _guard_dependents(d) -> None:
         raw = safe(lambda ref=ref: ref.FullFileName, "") or ""
         fn = os.path.normcase(os.path.realpath(raw)) if raw else ""
         if fn and any(fn.startswith(r_.rstrip("\\/") + os.sep) for r_ in roots):
-            raise InventorError(f"won't save: the changed part {fn} is in a protected folder ({fn}); undo that "
+            raise InventorError(f"won't save: the changed part {raw} is in a protected folder (Autodesk's library, "
+                                "templates or install, or one listed in INVENTOR_FORGE_PROTECTED); undo that "
                                 "change or save the assembly's parts elsewhere first")
         if raw:
             files.append(raw)

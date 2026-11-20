@@ -29,7 +29,9 @@ def link_parameters(s: Session, source: str, names: list[str] | None = None) -> 
     source: path to the file holding the parameters
     names: which parameters (default: all its user parameters)
     """
-    path = os.path.abspath(os.path.expanduser(source))
+    from ..writes import input_path
+    path = input_path(s.workdir, source)
+
     if not os.path.exists(path):
         raise InventorError(f"no such file: {path}")
     d = s.doc()

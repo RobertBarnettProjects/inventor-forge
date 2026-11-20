@@ -76,6 +76,8 @@ def check_scope(paths, what: str = "write") -> None:
 
 
 def read_only() -> bool:
+    """INVENTOR_FORGE_READ_ONLY: no tool that changes a model runs, and nothing is written."""
+
     return os.environ.get("INVENTOR_FORGE_READ_ONLY", "").strip().lower() in ("1", "true", "yes")
 
 
@@ -106,6 +108,16 @@ def guard(path: str, what: str = "write") -> None:
     if os.path.exists(path) and not os.access(path, os.W_OK):
         raise InventorError(f"won't {what} {path}: the file is read-only (checked in, or a library part)")
     check_scope([path], what)
+
+
+def input_path(workdir: str, path: str) -> str:
+    """The file a tool reads: a relative path is looked for under the session's workdir first (where relative saves
+    go), then against the server's own working folder. Always absolute; the file need not exist."""
+    path = os.path.expanduser(str(path))
+    if os.path.isabs(path):
+        return os.path.abspath(path)
+    under = os.path.abspath(os.path.join(workdir, path))
+    return under if os.path.exists(under) or not os.path.exists(path) else os.path.abspath(path)
 
 
 def output_path(workdir: str, path: str, sub: str, ext: str = "", what: str = "write") -> str:

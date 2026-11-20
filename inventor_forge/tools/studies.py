@@ -453,12 +453,13 @@ def read_result_maximum(s: Session, study: str, result: str = "Von Mises Stress"
 
 
 def _picture(s: Session, study: str, result: str, view: str) -> str:
+    from ..writes import output_path
     from .docs import VIEWS
     stem = re.sub(r"\W+", "_", f"{study} {result}")
-    png = os.path.join(s.workdir, "renders", f"{stem}.png")
-    os.makedirs(os.path.dirname(png), exist_ok=True)
+    png = output_path(s.workdir, f"{stem}.png", "renders")
     cam = s.view().Camera
     if view:
+
         key = VIEWS.get(view.lower())
         if not key:
             raise InventorError(f"view must be one of {sorted(VIEWS)}")
@@ -899,7 +900,8 @@ def _run_case(s: Session, pid: int, template: str, case: dict, want: list[str], 
     if True:
         name = case["name"]
         t0 = time.time()
-        if os.environ.get("INVENTOR_FORGE_TEST_EXIT_AT") == name:      # test hook: this session's Inventor exits mid-run
+        if os.environ.get("INVENTOR_FORGE_TEST_EXIT_AT") == name and s.private:
+            # test hook: this session's own Inventor exits mid-run (never one it only attached to)
             os.environ.pop("INVENTOR_FORGE_TEST_EXIT_AT")
             s.app.SilentOperation = True
             s.app.Quit()

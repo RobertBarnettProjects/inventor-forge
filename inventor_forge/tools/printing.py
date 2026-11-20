@@ -174,13 +174,16 @@ def export_print_package(s: Session, folder: str = "", name: str = "", formats: 
     stem = plain_name(name or os.path.splitext(safe(lambda: d.DisplayName, "part"))[0], "part")
     folder = os.path.abspath(folder if folder and os.path.isabs(folder) else
                              os.path.join(s.workdir, "exports", folder or ""))
-    os.makedirs(folder, exist_ok=True)
     native_ext = ".ipt" if kind == "part" else ".iam"
     final = {"native": os.path.join(folder, stem + native_ext), "stl": os.path.join(folder, stem + ".stl"),
              "3mf": os.path.join(folder, stem + ".3mf"), "step": os.path.join(folder, stem + ".step")}
     final["stp"] = final["step"]
+    from ..writes import check_scope
+    check_scope([final[f] for f in want], "export to")      # one refusal names every file, before a folder is made
     for f in want:
         guard(final[f], "export to")
+    os.makedirs(folder, exist_ok=True)
+
     timings: dict = {}
     t0 = time.time()
     if save_first and safe(lambda: d.Dirty, False) and safe(lambda: d.FullFileName, ""):

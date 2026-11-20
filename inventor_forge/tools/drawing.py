@@ -132,8 +132,10 @@ def _model_doc(s: Session, model: str):
             if s.kind(d) in ("part", "assembly"):
                 return d
         raise InventorError("no part/assembly open — give model=<path or document name>")
-    if os.path.exists(model):
-        return s.app.Documents.Open(os.path.abspath(model), False)
+    from ..writes import input_path
+    if os.path.exists(input_path(s.workdir, model)):
+        return s.app.Documents.Open(input_path(s.workdir, model), False)
+
     for d in items(s.app.Documents):
         if safe(lambda d=d: d.DisplayName, "").lower().split(".")[0] == model.lower().split(".")[0]:
             return d
@@ -2801,8 +2803,12 @@ def _hand_positions(d) -> dict:
 
 def supersede_file(path: str) -> str:
     """Move an existing file into a Superseded folder beside it, with its date, before a rebuild replaces it."""
+    from ..writes import guard
     folder = os.path.join(os.path.dirname(path), "Superseded")
+    # the file's new name carries the time, so it is the folder that is checked (and that a client approves)
+    guard(folder, "move a file into")
     os.makedirs(folder, exist_ok=True)
+
     stem, ext = os.path.splitext(os.path.basename(path))
     dest = os.path.join(folder, f"{stem} {time.strftime('%Y-%m-%d %H%M%S')}{ext}")
     os.replace(path, dest)
@@ -2817,11 +2823,12 @@ def supersede_drawing(s: Session, path: str) -> dict:
 
     path: the existing drawing file
     """
-    from ..writes import guard
-    path = os.path.abspath(path)
+    from ..writes import guard, input_path
+    path = input_path(s.workdir, path)
     if not os.path.exists(path):
         raise InventorError(f"no such file: {path}")
     guard(path, "move")
+    guard(os.path.join(os.path.dirname(path), "Superseded"), "move a file into")    # before anything is opened
     open_doc = next((x for x in items(s.app.Documents)
                      if os.path.normcase(safe(lambda x=x: x.FullFileName, "") or "") == os.path.normcase(path)), None)
     if open_doc is not None and safe(lambda: open_doc.Views.Count, 0):

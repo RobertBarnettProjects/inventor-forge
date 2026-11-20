@@ -82,9 +82,13 @@ def place_component(s: Session, path: str, x: float = 0.0, y: float = 0.0, z: fl
                 if not full:
                     raise InventorError(f"{path} is open but unsaved — save_document it first")
                 break
+    if not os.path.isabs(full):
+        from ..writes import input_path
+        full = input_path(s.workdir, path)            # a relative path: under the workdir, like relative saves
     if not os.path.exists(full):
         raise InventorError(f"file not found: {path}")
     tg = s.tg
+
     m = tg.CreateMatrix()
     if rotate_axis and rotate_angle:
         ax = {"X": (1, 0, 0), "Y": (0, 1, 0), "Z": (0, 0, 1)}[rotate_axis.upper()]
@@ -387,6 +391,29 @@ def copy_plan(files: list[str], root: str, folder: str, prefix: str, old_prefix:
     return plan
 
 
+def plan_clashes(plan: dict) -> list[str]:
+    """Destinations of a copy plan that more than one source file maps to (one copy would overwrite the other)."""
+    seen: dict[str, int] = {}
+    for dst in plan.values():
+        seen[_norm(dst)] = seen.get(_norm(dst), 0) + 1
+    return sorted({dst for dst in plan.values() if seen[_norm(dst)] > 1}, key=_norm)
+
+
+def backup_names(sources: list[str]) -> dict[str, str]:
+    """{source file: file name for its backup copy}; files that share a name in different folders get a number, so
+    one backup never replaces another."""
+    out, used = {}, set()
+    for src in sources:
+        stem, ext = os.path.splitext(os.path.basename(src))
+        name, n = stem + ext, 1
+        while name.lower() in used:
+            n += 1
+            name = f"{stem} ({n}){ext}"
+        used.add(name.lower())
+        out[src] = name
+    return out
+
+
 def _walk_files(top) -> tuple[dict, list]:
     """Every file reachable through File.ReferencedFileDescriptors (which, unlike AllReferencedDocuments, includes
     files used only in model states that aren't active), and the references that are missing."""
@@ -454,7 +481,7 @@ def copy_assembly(s: Session, folder: str, prefix: str = "", old_prefix: str = "
     """
     import shutil
 
-    from ..writes import guard
+    from ..writes import check_scope, guard
     from .docs import _dialog_watchdog, _silent
     d = s.assembly()
     src = safe(lambda: d.FullFileName, "")
@@ -463,7 +490,8 @@ def copy_assembly(s: Session, folder: str, prefix: str = "", old_prefix: str = "
     if safe(lambda: d.Dirty, False) or any(safe(lambda x=x: x.Dirty, False) for x in items(d.AllReferencedDocuments)):
         raise InventorError("the assembly or one of its parts has unsaved changes; save (or undo) them first so the "
                             "copy matches what is on disk")
-    root = os.path.abspath(source_root or os.path.dirname(src))
+    root = os.path.abspath(os.path.join(s.workdir, source_root) if source_root and not os.path.isabs(source_root)
+                           else source_root or os.path.dirname(src))
     folder = os.path.abspath(os.path.join(s.workdir, folder) if not os.path.isabs(folder) else folder)
     if _norm(folder) == _norm(root):
         raise InventorError("the destination folder is the source folder; give a new folder")
@@ -476,10 +504,16 @@ def copy_assembly(s: Session, folder: str, prefix: str = "", old_prefix: str = "
     originals = [safe(lambda f=f: f.FullFileName, "") or n for n, f in files.items()]   # names as written
     plan = copy_plan(originals, root, folder, prefix, old_prefix)
     plan.setdefault(_norm(src), os.path.join(folder, renamed(os.path.basename(src), prefix, old_prefix)))
+    same = plan_clashes(plan)
+    if same:
+        raise InventorError(f"{len(same)} source files would be copied to the same name, e.g. {same[0]}: with these "
+                            "prefixes their names no longer differ. Choose another prefix or old_prefix (nothing was "
+                            "copied)")
     clash = [p for p in plan.values() if os.path.exists(p)]
     if clash:
         raise InventorError(f"{len(clash)} destination file(s) already exist, e.g. {clash[0]}; choose a new folder or "
                             "prefix (nothing was copied)")
+    check_scope(list(plan.values()), "copy to")       # one refusal names every file outside the call's scope
     for p in plan.values():
         guard(p, "copy to")
     external = sorted(os.path.basename(f) for f in files if f not in plan)
@@ -686,10 +720,11 @@ def replace_reference(s: Session, old: str, new: str, dry_run: bool = False) -> 
     """
     import shutil
 
-    from ..writes import guard
+    from ..writes import check_scope, guard
     from .docs import _guard_dependents
     d = s.doc()
     top_file = safe(lambda: d.FullFileName, "")
+
     if not top_file:
         raise InventorError("save the document first; references are read from its file")
     if not dry_run and (safe(lambda: d.Dirty, False) or
@@ -707,12 +742,18 @@ def replace_reference(s: Session, old: str, new: str, dry_run: bool = False) -> 
     if dry_run:
         return {"would_replace": len(plan), "changes": changes[:50], "skipped": skipped[:20]}
     backup = os.path.join(s.workdir, "reference_backups", time.strftime("%Y%m%d-%H%M%S"))
-    backed = []
-    for src in sorted({a for a, _b, _c in plan} | {top_file}, key=_norm):
-        dst = os.path.join(backup, os.path.basename(src))
-        guard(dst, "back up to")
+    changed = {_norm(x): x for x in [a for a, _b, _c in plan] + [top_file]}      # one entry per file, whatever its case
+    names = backup_names([changed[k] for k in sorted(changed)])
+    # every check before the first copy: the backup folder (its name carries the time, so it is the folder a client
+    # approves) and each file that will be saved, all named in one refusal
+    check_scope([backup] + list(names), "back up and save")
+    guard(backup, "back up to")
+    for src in names:
         guard(src, "save")
-        os.makedirs(backup, exist_ok=True)
+    os.makedirs(backup, exist_ok=True)
+    backed = []
+    for src, name in names.items():
+        dst = os.path.join(backup, name)
         shutil.copy2(src, dst)
         backed.append(dst)
     wanted = {(_norm(a), _norm(b)): c for a, b, c in plan}

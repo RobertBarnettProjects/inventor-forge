@@ -1451,12 +1451,17 @@ def analyze_stress(s: Session, fixed_faces: list | None = None, loads: list[dict
             out["moment_check"]["ok"] = False
         else:
             out["moment_check"]["ok"] = True
-    png = os.path.join(s.workdir, "renders", f"{tag}_von_mises.png")
-    os.makedirs(os.path.dirname(png), exist_ok=True)
-    safe(lambda: _iso_result_view(s))
-    safe(lambda: s.view().SaveAsBitmap(png, 1600, 1000))
-    if os.path.exists(png):
-        out["path"] = png
+    from ..writes import output_path
+    try:                        # the picture is an extra: a refused path must not throw the solved results away
+        png = output_path(s.workdir, f"{tag}_von_mises.png", "renders")
+    except InventorError as e:
+        png, out["picture_skipped"] = "", str(e).split("\n")[0]
+    if png:
+        safe(lambda: _iso_result_view(s))
+        safe(lambda: s.view().SaveAsBitmap(png, 1600, 1000))
+        if os.path.exists(png):
+            out["path"] = png
+
     out["note"] = ("Inventor's default mesh is coarse; rerun with mesh_fraction=0.05 and compare the peak to "
                    "check convergence. The results stay in Inventor's Stress Analysis environment.")
     return out

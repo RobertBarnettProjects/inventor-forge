@@ -240,7 +240,6 @@ def create_part(s: Session, name: str = "", sheet_metal: bool = False) -> dict:
                    app.FileManager.GetTemplateFile(K.kPartDocumentObject, K.kMetricSystemOfMeasure))
         except Exception:
             tpl = ""
-
     d = app.Documents.Add(K.kPartDocumentObject, tpl, True)
     if sheet_metal and safe(lambda: d.SubType, "") != SHEET_METAL_SUBTYPE:
         d.SubType = SHEET_METAL_SUBTYPE
@@ -283,7 +282,6 @@ def open_document(s: Session, path: str) -> dict:
     path = input_path(s.workdir, path)
     if not os.path.exists(path):
         raise InventorError(f"file not found: {path}")
-
     with _silent(s), _dialog_watchdog(s) as dog:
         d = s.app.Documents.Open(path, True)
     d.Activate()

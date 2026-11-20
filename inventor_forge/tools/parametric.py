@@ -31,7 +31,6 @@ def link_parameters(s: Session, source: str, names: list[str] | None = None) -> 
     """
     from ..writes import input_path
     path = input_path(s.workdir, source)
-
     if not os.path.exists(path):
         raise InventorError(f"no such file: {path}")
     d = s.doc()

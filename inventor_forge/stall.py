@@ -15,6 +15,7 @@ SOLVER_EXES = ("feacomputeserver.exe", "wizstress.exe")
 IDLE_S = 900.0          # no processor time used by Inventor or its solvers for this long: stalled
 HUNG_S = 600.0          # Inventor not responding to Windows for this long: stalled
 MIN_CPU_S = 2.0         # processor seconds that count as work (reading the dialog costs Inventor a little)
+IDLE_SHARE = 0.01       # ... or 1 % of one core over the idle window, whichever is more
 
 
 def _env(name: str, default: float) -> float:
@@ -36,31 +37,35 @@ class SolveWatch:
     def __init__(self, idle_s: float | None = None, hung_s: float | None = None, min_cpu_s: float = MIN_CPU_S):
         self.idle_s = idle_s if idle_s is not None else _env("INVENTOR_FORGE_STALL_S", IDLE_S)
         self.hung_s = hung_s if hung_s is not None else _env("INVENTOR_FORGE_HUNG_S", HUNG_S)
-        self.min_cpu_s = min_cpu_s
+        # work over the last idle_s that counts as a solve working: a solver keeps at least one core busy, while an
+        # idle Inventor answering the dialog reads trickles a few ms a second, which must not keep a stall alive
+        self.need_s = max(min_cpu_s, IDLE_SHARE * self.idle_s)
         self.last: dict[int, float] = {}
-        self.work = 0.0                     # processor seconds used since the last time work was counted
-        self.worked_at: float | None = None
+        self.window: list[tuple[float, float]] = []      # (time, processor seconds used since the sample before)
+        self.started: float | None = None
         self.hung_since: float | None = None
         self.solvers_seen = False
 
     def update(self, t: float, cpu: dict[int, float], hung: bool = False, solvers: int = 0) -> str:
-        if self.worked_at is None:
-            self.worked_at = t
+        if self.started is None:
+            self.started = t
+        used = 0.0
         for pid, secs in cpu.items():
             before = self.last.get(pid, 0.0)
             if secs > before:
-                self.work += secs - before
+                used += secs - before
             self.last[pid] = secs
+        self.window.append((t, used))
+        self.window = [(ts, u) for ts, u in self.window if t - ts < self.idle_s]
         self.solvers_seen = self.solvers_seen or solvers > 0
-        if self.work >= self.min_cpu_s:
-            self.work, self.worked_at = 0.0, t
         self.hung_since = (self.hung_since if self.hung_since is not None else t) if hung else None
         if self.hung_since is not None and t - self.hung_since >= self.hung_s:
             return f"Inventor has not responded to Windows for {t - self.hung_since:.0f} s"
-        if t - self.worked_at >= self.idle_s:
-            who = "Inventor and its solver processes" if self.solvers_seen else \
-                "Inventor (no solver process started)"
-            return f"{who} used no processor time for {t - self.worked_at:.0f} s"
+        recent = sum(u for _ts, u in self.window)
+        if t - self.started >= self.idle_s and recent < self.need_s:
+            who = "Inventor and its solver processes" if self.solvers_seen else "Inventor (no solver process started)"
+            return (f"{who} used {recent:.1f} s of processor time in the last {self.idle_s:.0f} s "
+                    f"(a working solve uses far more)")
         return ""
 
 

@@ -227,7 +227,6 @@ class Session:
         import glob
         year = str(safe(lambda: self.app.SoftwareVersion.DisplayVersion, ""))[:4]
         root = os.path.join(os.environ.get("PUBLIC", r"C:\Users\Public"), "Documents", "Autodesk")
-
         found = glob.glob(os.path.join(root, f"Inventor {year}", "Templates", "*", "Metric", filename))
         found += glob.glob(os.path.join(root, f"Inventor {year}", "Templates", "*", "English", filename))
         found.sort(key=lambda p: 0 if os.sep + "en-US" + os.sep in p else 1)

@@ -77,7 +77,6 @@ def check_scope(paths, what: str = "write") -> None:
 
 def read_only() -> bool:
     """INVENTOR_FORGE_READ_ONLY: no tool that changes a model runs, and nothing is written."""
-
     return os.environ.get("INVENTOR_FORGE_READ_ONLY", "").strip().lower() in ("1", "true", "yes")
 
 

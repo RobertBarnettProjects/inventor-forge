@@ -78,7 +78,7 @@ def test_idle_solver_stalls_after_idle_s():
     assert w.update(0, {1: 10.0, 2: 50.0}, solvers=1) == ""
     assert w.update(30, {1: 10.1, 2: 50.0}, solvers=1) == ""
     why = w.update(61, {1: 10.2, 2: 50.0}, solvers=1)
-    assert "no processor time" in why and "solver" in why
+    assert "processor time" in why and "solver" in why
 
 
 def test_solver_processes_restarting_count_as_work():
@@ -110,3 +110,17 @@ def test_solver_processes_found_through_grandchildren():
             (22, 20, "conhost.exe"), (30, 99, "FEAComputeServer.exe"), (40, 40, "loop.exe")]
     assert solver_processes(10, tree) == [(20, "FEAComputeServer.exe"), (21, "WizStress.exe")]
     assert solver_processes(99, tree) == [(30, "FEAComputeServer.exe")]
+
+
+def test_idle_trickle_does_not_hide_a_stall():
+    w = SolveWatch(idle_s=900, hung_s=600)
+    why = ""
+    for i in range(0, 2000, 5):             # an idle Inventor answering dialog reads: 3 ms of CPU a second
+        why = why or w.update(float(i), {1: 10.0 + i * 0.003, 2: 50.0}, solvers=1)
+    assert "processor time" in why
+
+
+def test_slow_but_working_solve_is_not_a_stall():
+    w = SolveWatch(idle_s=900, hung_s=600)
+    for i in range(0, 5000, 5):             # a solver using a quarter of a core
+        assert w.update(float(i), {1: 10.0, 2: i * 0.25}, solvers=1) == ""

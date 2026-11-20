@@ -19,7 +19,7 @@ def test_status_found_elsewhere_when_stored_path_gone():
     p = J(OLD, "a.ipt")
     assert reference_status(p, J(NEW, "a.ipt"), False, exists=lambda _p: False) == "found_elsewhere"
     assert reference_status(p, "", False, exists=lambda _p: False) == "found_elsewhere"
-    assert reference_status(p, p, False, location_different=True, exists=lambda _p: True) == "found_elsewhere"
+    assert reference_status(p, p, False, stored=J(OLD, "sub", "a.ipt"), exists=lambda _p: True) == "found_elsewhere"
 
 
 def test_status_order_missing_disabled_substituted():
@@ -124,3 +124,10 @@ def test_slow_but_working_solve_is_not_a_stall():
     w = SolveWatch(idle_s=900, hung_s=600)
     for i in range(0, 5000, 5):             # a solver using a quarter of a core
         assert w.update(float(i), {1: 10.0, 2: i * 0.25}, solvers=1) == ""
+
+
+def test_status_ok_for_a_reference_repointed_this_session():
+    p = J(NEW, "a.ipt")                      # no stored relative path yet: judged by the path itself
+    assert reference_status(p, p, False, stored="", exists=lambda _p: True) == "ok"
+    assert reference_status(p, p, False, stored=p, exists=lambda _p: True) == "ok"
+    assert reference_status(p, p, False, stored="", exists=lambda _p: False) == "found_elsewhere"

@@ -597,18 +597,22 @@ def copy_assembly(s: Session, folder: str, prefix: str = "", old_prefix: str = "
 
 # --------------------------------------------------------------------------- reference audit and repair
 def reference_status(path: str, resolved: str, missing: bool, disabled: bool = False, substituted: bool = False,
-                     location_different: bool = False, exists=os.path.exists) -> str:
+                     stored: str = "", exists=os.path.exists) -> str:
     """One reference's state. Inventor quietly loads a file it finds somewhere other than the stored path (through
     the project's search paths), so a reference can work today and break when the model moves; that is
     "found_elsewhere". "substituted" is a file with the right name but a different origin (Inventor's internal name
-    differs), which loads as if nothing was wrong."""
+    differs), which loads as if nothing was wrong.
+
+    stored: where the saved file says the reference is (its relative path joined to the referencing file's folder);
+      empty for a reference changed since the file was opened. Inventor's own ReferenceLocationDifferent flag isn't
+      used: it stays set on a repointed reference until the file is reopened."""
     if missing:
         return "missing"
     if disabled:
         return "disabled"
     if substituted:
         return "substituted"
-    if location_different or (resolved and _norm(resolved) != _norm(path)) or (path and not exists(path)):
+    if (stored and _norm(stored) != _norm(path)) or (resolved and _norm(resolved) != _norm(path))             or (path and not exists(path)):
         return "found_elsewhere"
     return "ok"
 
@@ -659,11 +663,16 @@ def _references(top) -> list[dict]:
             path = safe(lambda fd=fd: fd.FullFileName, "") or ""
             resolved = safe(lambda fd=fd: fd.ResolvedFullFileName, "") or ""
             missing = bool(safe(lambda fd=fd: fd.ReferenceMissing, False))
-            rows.append({"in": fn, "path": path, "resolved": resolved, "relative": safe(lambda fd=fd: fd.RelativeFileName, ""),
+            relative = safe(lambda fd=fd: fd.RelativeFileName, "") or ""
+            library = safe(lambda fd=fd: fd.LibraryName, "") or ""
+            # a library reference is stored relative to the library, not to the referencing file
+            stored = (os.path.normpath(os.path.join(os.path.dirname(fn), relative))
+                      if relative and not library and not os.path.isabs(relative) else "")
+            rows.append({"in": fn, "path": path, "resolved": resolved, "stored": stored,
                          "status": reference_status(path, resolved, missing,
                                                     bool(safe(lambda fd=fd: fd.ReferenceDisabled, False)),
                                                     bool(safe(lambda fd=fd: fd.ReferenceInternalNameDifferent, False)),
-                                                    bool(safe(lambda fd=fd: fd.ReferenceLocationDifferent, False))),
+                                                    stored),
                          "_fd": fd})
             if not missing:
                 rf = safe(lambda fd=fd: fd.ReferencedFile)
@@ -698,8 +707,9 @@ def list_references(s: Session, only_problems: bool = True, root: str = "") -> d
             row["outside_root"] = not _norm(row["resolved"] or row["path"]).startswith(root_n)
             counts["outside_root"] = counts.get("outside_root", 0) + row["outside_root"]
         if not only_problems or row["status"] != "ok" or row.get("outside_root"):
-            if row["resolved"] and _norm(row["resolved"]) == _norm(row["path"]):
-                row.pop("resolved")
+            for k in ("resolved", "stored"):
+                if not row[k] or _norm(row[k]) == _norm(row["path"]):
+                    row.pop(k)
             out_rows.append(row)
     return {"document": d.FullFileName, "references": len(rows), "counts": counts, "rows": out_rows[:200],
             **({"truncated": len(out_rows)} if len(out_rows) > 200 else {}),

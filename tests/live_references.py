@@ -12,9 +12,10 @@ import tempfile
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from inventor_forge.engine import Forge  # noqa: E402
 
+work = tempfile.mkdtemp(prefix="forge-refs-")
+os.environ["INVENTOR_FORGE_WORKDIR"] = work          # backups land beside the test files, not in the user's folder
 F = Forge(visible=False)
 FAIL = []
-work = tempfile.mkdtemp(prefix="forge-refs-")
 src = os.path.join(work, "parts")
 moved = os.path.join(work, "moved")
 
@@ -67,6 +68,7 @@ try:
 
     r = call("list_references", only_problems=False)
     paths = [row["path"] for row in r.get("rows", [])]
+    expect("repointed references read ok before reopening", r.get("healthy") is True, r.get("counts"))
     expect("references now in moved folder", paths and all(os.path.normcase(moved) in os.path.normcase(p) for p in paths),
            paths)
 

@@ -86,7 +86,24 @@ def solver_processes(inventor_pid: int, tree: list[tuple[int, int, str]] | None 
     return out
 
 
+def orphaned(solvers: list[int], inventors: set[int], parents: dict[int, int]) -> list[int]:
+    """The solver processes that no running Inventor started, directly or through other processes.
+
+    solvers: solver process ids; inventors: the running Inventors' ids; parents: {pid: parent pid} of every process.
+    A solver with a running Inventor anywhere above it is in use (it may be the user's solve) and is never listed."""
+    out = []
+    for pid in solvers:
+        cur, seen = pid, set()
+        while cur in parents and cur not in seen and cur not in inventors:
+            seen.add(cur)
+            cur = parents[cur]
+        if cur not in inventors:
+            out.append(pid)
+    return out
+
+
 def _process_table() -> list[tuple[int, int, str]]:
+    """[(pid, parent pid, exe name)] of every process, from one Toolhelp snapshot."""
     import ctypes
     from ctypes import wintypes as wt
 
@@ -95,9 +112,15 @@ def _process_table() -> list[tuple[int, int, str]]:
                     ("th32DefaultHeapID", ctypes.c_void_p), ("th32ModuleID", wt.DWORD), ("cntThreads", wt.DWORD),
                     ("th32ParentProcessID", wt.DWORD), ("pcPriClassBase", ctypes.c_long), ("dwFlags", wt.DWORD),
                     ("szExeFile", ctypes.c_wchar * 260)]
-    k = ctypes.windll.kernel32
+    k = ctypes.WinDLL("kernel32", use_last_error=True)     # its own prototypes: handles are pointer-sized
     k.CreateToolhelp32Snapshot.restype = wt.HANDLE
-    snap = k.CreateToolhelp32Snapshot(0x2, 0)
+    k.CreateToolhelp32Snapshot.argtypes = (wt.DWORD, wt.DWORD)
+    for f in (k.Process32FirstW, k.Process32NextW):
+        f.restype, f.argtypes = wt.BOOL, (wt.HANDLE, ctypes.POINTER(Entry))
+    k.CloseHandle.restype, k.CloseHandle.argtypes = wt.BOOL, (wt.HANDLE,)
+    snap = k.CreateToolhelp32Snapshot(0x2, 0)              # TH32CS_SNAPPROCESS
+    if snap in (None, wt.HANDLE(-1).value):
+        raise OSError("Windows gave no process list")
     out = []
     try:
         e = Entry()

@@ -513,28 +513,8 @@ def tree_item_rect(tree: int, item: int) -> tuple[int, int, int, int]:
 
 def child_processes(parent: int) -> list[tuple[int, str]]:
     """(pid, exe name) of processes started by `parent` (Toolhelp snapshot; works after the parent has exited)."""
-    from ctypes import wintypes as wt
-
-    class Entry(ctypes.Structure):
-        _fields_ = [("dwSize", wt.DWORD), ("cntUsage", wt.DWORD), ("th32ProcessID", wt.DWORD),
-                    ("th32DefaultHeapID", ctypes.c_void_p), ("th32ModuleID", wt.DWORD), ("cntThreads", wt.DWORD),
-                    ("th32ParentProcessID", wt.DWORD), ("pcPriClassBase", ctypes.c_long), ("dwFlags", wt.DWORD),
-                    ("szExeFile", ctypes.c_wchar * 260)]
-    k = ctypes.windll.kernel32
-    k.CreateToolhelp32Snapshot.restype = wt.HANDLE
-    snap = k.CreateToolhelp32Snapshot(0x2, 0)
-    out = []
-    try:
-        e = Entry()
-        e.dwSize = ctypes.sizeof(Entry)
-        ok = k.Process32FirstW(snap, ctypes.byref(e))
-        while ok:
-            if e.th32ParentProcessID == parent:
-                out.append((e.th32ProcessID, e.szExeFile))
-            ok = k.Process32NextW(snap, ctypes.byref(e))
-    finally:
-        k.CloseHandle(snap)
-    return out
+    from .stall import _process_table
+    return [(pid, exe) for pid, par, exe in _process_table() if par == parent]
 
 
 def end_orphaned_solvers(dead_inventor: int) -> int:
@@ -546,41 +526,27 @@ def end_orphaned_solvers(dead_inventor: int) -> int:
 
 
 def orphaned_solvers() -> list[int]:
-    """Stress Analysis solver processes whose Inventor has gone (they keep analysis files locked)."""
-    alive = set(pids_named("Inventor.exe"))
-    solvers = set(pids_named("FEAComputeServer.exe"))
-    parents = {}
-    # map every process to its parent with one snapshot
-    import ctypes as _c
-
-    class Entry(_c.Structure):
-        _fields_ = [("dwSize", _c.c_ulong), ("cntUsage", _c.c_ulong), ("th32ProcessID", _c.c_ulong),
-                    ("th32DefaultHeapID", _c.c_void_p), ("th32ModuleID", _c.c_ulong), ("cntThreads", _c.c_ulong),
-                    ("th32ParentProcessID", _c.c_ulong), ("pcPriClassBase", _c.c_long), ("dwFlags", _c.c_ulong),
-                    ("szExeFile", _c.c_wchar * 260)]
-    k = _c.windll.kernel32
-    k.CreateToolhelp32Snapshot.restype = _c.c_void_p
-    snap = k.CreateToolhelp32Snapshot(0x2, 0)
-    try:
-        e = Entry()
-        e.dwSize = _c.sizeof(Entry)
-        ok = k.Process32FirstW(_c.c_void_p(snap), _c.byref(e))
-        while ok:
-            parents[e.th32ProcessID] = e.th32ParentProcessID
-            ok = k.Process32NextW(_c.c_void_p(snap), _c.byref(e))
-    finally:
-        k.CloseHandle(_c.c_void_p(snap))
-    return [p for p in solvers if parents.get(p) not in alive]
+    """Stress Analysis solver processes whose Inventor has gone (they keep analysis files locked). A solver with a
+    running Inventor anywhere above it in the process tree is someone's solve and is never listed."""
+    from .stall import _process_table, orphaned
+    table = _process_table()
+    return orphaned([pid for pid, _par, exe in table if exe.lower() == "feacomputeserver.exe"],
+                    set(pids_named("Inventor.exe")), {pid: par for pid, par, _exe in table if pid != par})
 
 
 def end_solvers(pids: list[int]) -> int:
+    """End these processes (solvers, or the session's own Inventor); returns how many were ended."""
     n = 0
     for pid in pids:
         try:
-            hp = win32api.OpenProcess(0x0001, False, pid)
+            hp = win32api.OpenProcess(0x0001, False, pid)      # PROCESS_TERMINATE
+        except Exception:
+            continue
+        try:
             win32process.TerminateProcess(hp, 1)
-            win32api.CloseHandle(hp)
             n += 1
         except Exception:
             pass
+        finally:
+            win32api.CloseHandle(hp)
     return n

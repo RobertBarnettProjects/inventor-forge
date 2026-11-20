@@ -11,10 +11,19 @@ Analysis environment, which has no API and is therefore driven with the mouse an
 > During the run, keep Inventor visible and don't touch the mouse; a click that would land outside Inventor
 > stops the run. Every other tool works purely through the API.
 
-It is written from Inventor's type library and API documentation. It also powers the Inventor backend of the [ShapeRotator](https://github.com/RobertBarnettProjects/hermes-shaperotator) plugin for Hermes Agent.
+It is written from Inventor's type library and API documentation. Any MCP client that speaks stdio can use it;
+it is also the Inventor backend of the [ShapeRotator](https://github.com/RobertBarnettProjects/hermes-shaperotator)
+plugin for Hermes Agent, which installs it on first use.
+
+![A go-kart built and assembled in Autodesk Inventor through inventor-forge](docs/inventor-kart.gif)
+
+*A go-kart built through inventor-forge: a welded round-tube frame from 3D centre lines (`tube_frame`, AS/NZS 1163 CHS
+sizes), then 27 components placed in an assembly with an interference check.*
 
 | | |
 |---|---|
+| ![Bracket detail drawing with section A-A and detail B](docs/bracket-detail-drawing.jpg) | ![Go-kart general arrangement with parts list and balloons](docs/kart-ga-drawing.jpg) |
+| A detail drawing: section A-A, detail B, hole notes and general notes to AS 1100, checked by the drawing QA | `make_assembly_sheet` on the kart: four views, 23-item parts list, balloons |
 | ![part sheet](docs/part-sheet-base-plate.png) | ![GA sheet](docs/ga-sheet-pin-assembly.png) |
 | `make_part_sheet` → QA 0 issues: third-angle views clear of the title block, retrieved + hole-position dimensions, centre marks, labels, title block from iProperties | `make_assembly_sheet`: GA with parts list above the title block and balloons |
 

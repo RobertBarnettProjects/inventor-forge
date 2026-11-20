@@ -1,18 +1,19 @@
 # inventor-forge
 
-**Autodesk Inventor for AI agents** — an MCP server (and Python library) with 202 tools: parametric
-parts, sheet metal, assemblies, drawings to AS 1100, ISO, ASME, DIN, BS 8888, JIS or GB with automatic QA, materials and mass
-properties — all through Inventor's COM API — and stress / modal analysis in Inventor's own Stress
-Analysis environment, which has no API and is therefore driven with the mouse and keyboard (below).
+inventor-forge is an MCP server and Python library that gives AI agents control of Autodesk Inventor. Its 207 tools
+cover parametric parts, sheet metal, assemblies, drawings to AS 1100, ISO, ASME, DIN, BS 8888, JIS or GB with an
+automatic QA check, materials and mass properties, all through Inventor's COM API. Stress and modal analysis run in
+Inventor's Stress Analysis environment, which has no API and is therefore driven with the mouse and keyboard, as
+described under [Implementation notes](#implementation-notes).
 
-> **⚠ Mouse and keyboard notice.** `analyze_stress` and `analyze_modes` take over the mouse and keyboard
-> for 30–60 s, because Inventor's Stress Analysis has no API. Before anything moves, the tool returns a notice that
-> the agent must show you, and it only runs once called again with `user_notified=true` after your go-ahead.
-> During the run, keep Inventor visible and don't touch the mouse; a click that would land outside Inventor
-> stops the run. Every other tool works purely through the API.
+> **Mouse and keyboard use.** `analyze_stress` and `analyze_modes` take control of the mouse and keyboard for 30 to
+> 60 seconds, because Inventor's Stress Analysis has no API. Before any input is sent, the tool returns a notice that
+> the agent must show to the user, and it runs only when called again with `user_notified=true` after the user agrees.
+> During the run, Inventor must remain visible and the mouse must not be used; a click that would land outside
+> Inventor stops the run. All other tools work through the API alone.
 
-It is written from Inventor's type library and API documentation. Any MCP client that speaks stdio can use it;
-it is also the Inventor backend of the [ShapeRotator](https://github.com/RobertBarnettProjects/hermes-shaperotator)
+It is written from Inventor's type library and API documentation. Any MCP client that communicates over stdio can use
+it. It is also the Inventor backend of the [ShapeRotator](https://github.com/RobertBarnettProjects/hermes-shaperotator)
 plugin for Hermes Agent, which installs it on first use.
 
 ![A go-kart built and assembled in Autodesk Inventor through inventor-forge](docs/inventor-kart.gif)
@@ -25,7 +26,7 @@ sizes), then 27 components placed in an assembly with an interference check.*
 | ![Bracket detail drawing with section A-A and detail B](docs/bracket-detail-drawing.jpg) | ![Go-kart general arrangement with parts list and balloons](docs/kart-ga-drawing.jpg) |
 | A detail drawing: section A-A, detail B, hole notes and general notes to AS 1100, checked by the drawing QA | `make_assembly_sheet` on the kart: four views, 23-item parts list, balloons |
 | ![part sheet](docs/part-sheet-base-plate.png) | ![GA sheet](docs/ga-sheet-pin-assembly.png) |
-| `make_part_sheet` → QA 0 issues: third-angle views clear of the title block, retrieved + hole-position dimensions, centre marks, labels, title block from iProperties | `make_assembly_sheet`: GA with parts list above the title block and balloons |
+| `make_part_sheet`, with no QA issues: third-angle views clear of the title block, retrieved and hole-position dimensions, centre marks, labels, and a title block filled from iProperties | `make_assembly_sheet`: a general arrangement with the parts list above the title block, and balloons |
 
 ![Inventor stress plot](docs/inventor-stress-cantilever.png)
 
@@ -36,8 +37,8 @@ tip load, run end to end by the tool: 0.611 mm tip deflection (beam theory 0.614
 
 ## Install
 
-Requirements: Windows, Autodesk Inventor (tested on 2027), Python 3.10+ with `pywin32`.
-Analysis needs Inventor's Stress Analysis add-in (Inventor Professional) and a visible Inventor window.
+Requirements: Windows, Autodesk Inventor (tested with 2027), and Python 3.10 or later with `pywin32`. Analysis requires
+Inventor's Stress Analysis add-in (Inventor Professional) and a visible Inventor window.
 
 ```bash
 pip install pywin32
@@ -49,79 +50,81 @@ Claude Code:
 claude mcp add inventor-forge -- python -X utf8 -m inventor_forge.server
 ```
 
-(run from this folder, or add `--env PYTHONPATH=<path to this folder>`). Any MCP client works the same way:
-command `python`, args `["-X", "utf8", "-m", "inventor_forge.server"]`. Add `--hidden` to start Inventor
-invisibly when it isn't already running.
+Run this from the repository folder, or add `--env PYTHONPATH=<path to this folder>`. Other MCP clients are configured
+the same way: command `python`, arguments `["-X", "utf8", "-m", "inventor_forge.server"]`. Add `--hidden` to start
+Inventor without a window when it is not already running.
 
-No third-party Python packages beyond pywin32: the MCP protocol layer, the dialog driver and the
-report parser are plain Python.
+The only third-party dependency is pywin32; the MCP protocol layer, the dialog driver and the report parser are
+written in plain Python.
 
-## How it works
+## Architecture
 
-- **One COM apartment.** Every call runs on a single STA thread, so it is safe from async MCP hosts and
-  multi-threaded agents.
-- **Units at the edge.** Inventor's API is in centimetres and radians; every tool takes and returns mm,
-  degrees, N, MPa, kg.
-- **Constants from the type library.** All 5,000+ `k…` enum values are read from Inventor's own type
-  library at run time — no hard-coded magic numbers.
-- **Typed calls where late binding can't.** Methods with `[out]` parameters (mass inertia, evaluator
+- **Single COM apartment.** Every call runs on one single-threaded apartment (STA) thread, so the server is safe to
+  use from asynchronous MCP hosts and multi-threaded agents.
+- **Units.** Inventor's API works in centimetres and radians; every tool accepts and returns millimetres, degrees,
+  newtons, megapascals and kilograms.
+- **Constants from the type library.** All 5,000+ `k…` enumeration values are read from Inventor's type library at
+  run time rather than hard-coded.
+- **Typed calls where late binding is insufficient.** Methods with `[out]` parameters (mass inertia, evaluator
   queries, geometry proxies) and indexed properties (`DrawingCurves`) are invoked with explicit COM types.
-- **Every feature reports a delta** — `Hole1 | V 92199 (-3801 mm³) | F10 E20` — so the agent can check
-  the result against a hand calculation; a feature that doesn't change the volume is flagged.
-- **Direction-agnostic cuts and holes.** Cut extrusions and holes try the side that actually removes
-  material, so the agent doesn't have to know Inventor's sketch-normal conventions.
-- **Built for clients that build on it.** Each tool's `_meta` carries a `cad/*` profile: whether it changes the
+- **Feature deltas.** Every feature reports its change, for example `Hole1 | V 92199 (-3801 mm³) | F10 E20`, so the
+  agent can check the result against a hand calculation. A feature that does not change the volume is flagged.
+- **Direction-independent cuts and holes.** Cut extrusions and holes use the side that removes material, so the agent
+  does not need to know Inventor's sketch-normal conventions.
+- **Tool profiles for clients.** Each tool's `_meta` carries a `cad/*` profile: whether it changes the
   model's shape, takes over the mouse and keyboard, or runs code; which arguments name files it writes or reads; and
   how long a call may take for the arguments given. `initialize` advertises it under
-  `capabilities.experimental["cad/profile"]`. A client can then refresh previews, warn the user, sandbox writes and
-  size its waits without hard-coding any of it (`inventor_forge/profile.py`).
-- **Writes stay where the client allows.** A call may carry `_meta["cad/write_scope"]` = `{"dirs": [...], "files":
+  `capabilities.experimental["cad/profile"]`. A client can then refresh previews, inform the user, restrict writes and
+  set its time limits without hard-coding any of it (`inventor_forge/profile.py`).
+- **Write scope.** A call may carry `_meta["cad/write_scope"]` = `{"dirs": [...], "files":
   [...]}`. Every write is checked against it at the moment it happens, with links followed and the final name (an
   added extension, a `.dwg` fallback): saves include the changed documents an assembly or drawing also writes.
   Anything outside is refused before a file is touched, and the refusal lists every such path after
   `cad/needs_approval:`, so a client can ask the user about all of them and send the call again. Forge's own temporary
   files are always allowed; without a scope, only the protected folders apply.
-- **Its own Inventor, tidied away.** An Inventor the server starts belongs to the session: when the client closes
-  the connection it is closed, or, if it holds unsaved changes, made visible and left open. An Inventor the session
-  only attached to is never closed.
-- **Progress while it works.** A call that carries an MCP progress token gets a progress notification every 10 s
-  saying what the tool is doing (a solve's elapsed time, the case of a batch), so a client can tell a long solve
-  from a stuck server.
+- **Session-owned Inventor instances.** An Inventor that the server starts belongs to the session. When the client
+  closes the connection, it is closed; if it holds unsaved changes, it is made visible and left open instead. An
+  Inventor that the session only attached to is never closed.
+- **Progress notifications.** A call that carries an MCP progress token receives a notification every 10 seconds
+  describing the current step (a solve's elapsed time, the current case of a batch), so a client can distinguish a
+  long solve from an unresponsive server.
 
-## Tools (205)
+## Tools (207)
 
 Full reference with arguments: [TOOLS.md](TOOLS.md).
 
-- **Session / documents** — connect, status, list/activate/open/save/close documents, export (STEP, IGES,
+- **Session / documents**: connect, status, list/activate/open/save/close documents, export (STEP, IGES,
   STL, SAT, Parasolid, OBJ, JT, 3MF, PDF/DWG/DXF), set_view, screenshot (returned to the model as an
   image), transaction (begin/commit/abort undo groups), undo.
-- **Sketch** — create_sketch (base plane, offset plane or planar face, reporting where sketch x/y point),
+- **Sketch**: create_sketch (base plane, offset plane or planar face, reporting where sketch x/y point),
   rectangle, circle, line, arc, polygon (across-flats reported), closed polyline profile, slot, hole-centre
-  points — dimensioned so they stay parametric; separately drawn lines and arcs join up automatically;
+  points, dimensioned so they stay parametric; separately drawn lines and arcs join up automatically;
   geometric constraints and driving dimensions on any curve, offset, project model edges; sketch_info.
-- **Features** — extrude (join/cut/intersect/new body, through all, taper), revolve (about X/Y/Z, a work
+- **Features**: extrude (join/cut/intersect/new body, through all, taper), revolve (about X/Y/Z, a work
   axis or a construction line), hole (several centres at once; drilled, tapped ISO metric,
   counterbored, countersunk; blind or through), hole_linear (from two edges), fillet, chamfer (distance,
   two distances, distance + angle), circular / rectangular pattern, mirror, shell, cosmetic thread,
   sweep, loft, coil, face draft, thicken, split / trim, combine bodies, engraved or embossed text,
   work planes/axes, list / delete / suppress features.
-- **Standard parts** — create_standard_part: hex bolts (ISO 4017), socket screws (ISO 4762), hex nuts
+- **Standard parts**: create_standard_part: hex bolts (ISO 4017), socket screws (ISO 4762), hex nuts
   (ISO 4032), washers (ISO 7089) and dowels (ISO 2338), M3–M24, with part number and description filled in.
-- **Inspect** — inspect (volume, area, bbox, mass), list_faces (type, area, centroid, outward normal,
+- **Inspect**: inspect (volume, area, bbox, mass), list_faces (type, area, centroid, outward normal,
   cylinder diameter/axis, hole yes/no), list_edges, find_face / find_edge (by point and/or normal),
   mass_properties (mass, CoG, inertia tensor, principal moments), measure (min distance, angle).
-- **Parameters** — get / set / add parameters, list_dimensions, edit_dimension.
-- **Materials & iProperties** — list_materials, set_material (returns E, ν, density, yield, UTS);
+- **Parameters**: get / set / add parameters, list_dimensions, edit_dimension.
+- **Materials & iProperties**: list_materials, set_material (returns E, ν, density, yield, UTS);
   get / set iProperties (part number, description, designer… and custom properties).
-- **Sheet metal** — thickness and bend radius, face, flange, cut, flat_pattern (blank size + DXF for
+- **Sheet metal**: thickness and bend radius, face, flange, cut, flat_pattern (blank size + DXF for
   laser/plasma).
-- **Assembly** — place_component (position + rotation, grounded), add_constraint (mate — axis-to-axis
-  for cylinders — flush, angle, insert, tangent; faces/edges by part index or origin planes/axes),
+- **Assembly**: place_component (position + rotation, grounded), add_constraint (mate, axis-to-axis
+  for cylinders, flush, angle, insert, tangent; faces/edges by part index or origin planes/axes),
   ground / move component, circular and linear component patterns, inspect_assembly (components, constraint health, per-component face tables),
-  check_interference (pairs + overlap volume), bill_of_materials (+ CSV).
-- **Standards** — list_standards, set_standard, get_standard: the agent asks once per session which standard to
+  check_interference (pairs + overlap volume), bill_of_materials (+ CSV), copy_assembly, list_references (an audit of
+  every file reference: found elsewhere through the project search, substituted, missing), replace_reference
+  (repoint a file or a whole folder, with backups and a read-back check).
+- **Standards**: list_standards, set_standard, get_standard: the agent asks once per session which standard to
   work to (AS 1100, ISO, ASME, DIN, BS 8888, JIS, GB); drawings use its template, projection angle and dimension style.
-- **Drawings** — create_drawing (to the session's standard: AS 1100 / ASME / JIS third-angle, ISO / DIN / BS 8888 / GB first-angle), sheets,
+- **Drawings**: create_drawing (to the session's standard: AS 1100 / ASME / JIS third-angle, ISO / DIN / BS 8888 / GB first-angle), sheets,
   base / projected / section / detail views, move / rescale views, linear and diameter dimensions,
   auto_dimension_view (retrieve model dimensions), tolerances and fits, surface finish, centre marks, hole notes,
   hole tables, revision tables, general notes, parts list, auto_balloon, title block fields, view labels, **make_part_sheet / make_assembly_sheet** (one-shot
@@ -129,83 +132,85 @@ Full reference with arguments: [TOOLS.md](TOOLS.md).
   thread and spline-hole callouts are placed clear of other text, GA sheet size can be chosen automatically, AS 1100
   projection symbol), add_projection_symbol, set_view_component_visibility, **check_drawing** (QA), render_sheet
   (image back to the model), export_pdf.
-- **Analysis** — analyze_stress, analyze_modes (Inventor Stress Analysis, parts and assemblies: automatic contacts of a chosen type, Fixed / Frictionless / Pin supports, force, pressure, gravity, bearing, moment and remote-force loads, local mesh control, Inventor's own mesh refinement, a chosen model state), read_stress_report, exit_analysis. Several faces are picked from one view where possible. Once a study exists, no mouse is needed: list_studies, activate_study, copy_study, rename_study, delete_study_item, list_analysis_parameters, set_analysis_parameters, solve_study, read_result_maximum, show_result, set_result_colors, study_report (whole file, or one study), run_study_cases (a resumable table of load cases that restarts a crashed private Inventor), set_contact_type, mesh_convergence, result_at_point (a result's value at a spot, read off the colour scale), refresh_analysis_display. solve_state watches any Inventor using Windows calls only.
-- **Frames** — frame_members: a welded box-section frame from member centre lines in one call, with a cut list (lengths, mitre angles, stock lengths).
-- **Parametric** — link_parameters (master part), parametric_extrusion (fully constrained, expression-driven), model states, named faces, split_faces, check_assembly, component_gap.
-- **Working alongside the user** — connect(private=true) runs in a separate Inventor process; tools refuse to call Inventor during a solve, and read-only tools retry when it is busy.
-- **3D printing and multi-body parts** — export_print_package (native + STL + 3MF + STEP in mm, written atomically,
+- **Analysis**: analyze_stress, analyze_modes (Inventor Stress Analysis, parts and assemblies: automatic contacts of a chosen type, Fixed / Frictionless / Pin supports, force, pressure, gravity, bearing, moment and remote-force loads, local mesh control, Inventor's own mesh refinement, a chosen model state), read_stress_report, exit_analysis. Several faces are picked from one view where possible. Once a study exists, no mouse is needed: list_studies, activate_study, copy_study, rename_study, delete_study_item, list_analysis_parameters, set_analysis_parameters, solve_study, read_result_maximum, show_result, set_result_colors, study_report (whole file, or one study), run_study_cases (a resumable table of load cases that restarts a crashed private Inventor), set_contact_type, mesh_convergence, result_at_point (a result's value at a spot, read off the colour scale), refresh_analysis_display. solve_state watches any Inventor using Windows calls only.
+- **Frames**: tube_frame (welded round-tube frames from 3D centre lines, AS/NZS 1163 CHS sizes, with a cut list) and frame_members (welded box-section frames from member centre lines, with a cut list of lengths, mitre angles and stock lengths).
+- **Parametric**: link_parameters (master part), parametric_extrusion (fully constrained, expression-driven), model states, named faces, split_faces, check_assembly, component_gap.
+- **Concurrent use**: connect(private=true) runs in a separate Inventor process; tools refuse to call Inventor during a solve, and read-only tools retry when it is busy.
+- **3D printing and multi-body parts**: export_print_package (native + STL + 3MF + STEP in mm, written atomically,
   every mesh checked for shells, open edges, extents and bed contact; a millimetre 3MF from the mesh when Inventor's
   translator can't), export_capabilities, list_bodies, `body=` on extrude / hole / fillet / chamfer / find_edge /
   find_face / measure with per-body volume deltas, body_gap, pose_bodies (clearances and a picture of another
   arrangement without changing the part).
-- **Fewer calls** — select_edges / select_faces (filters on the server, indices back), parametric_profile (lines, arcs,
+- **Batch operations**: select_edges / select_faces (filters on the server, indices back), parametric_profile (lines, arcs,
   circles, extruded or revolved in one call), batch (one undo step, named outputs, rollback on the first failure),
   set_output (compact results, per-call timings).
-- **Reading** — read_pdf_text (standard library only).
-- **System** — execute_python (persistent namespace with live Inventor objects), reload_api,
+- **Reading**: read_pdf_text (standard library only).
+- **System**: execute_python (persistent namespace with live Inventor objects), reload_api,
   list_tools.
 
 ## Reference guides
 
-Short, rule-shaped notes on how Inventor behaves, for the model using the tools: `guide(topic)` returns one, and MCP
+Concise notes on Inventor's behaviour, written for the model using the tools: `guide(topic)` returns one, and MCP
 clients can read them as resources (`inventor-forge://guide/<topic>`). Topics: session (working alongside the user,
 hangs, COM binding, unattended runs), modelling, assemblies, stress-analysis, drawings, printing. They live in
 [inventor_forge/guides](inventor_forge/guides).
 
-## Staying healthy in long sessions
+## Reliability in long sessions
 
 - The session is pinned to the Inventor process it connected to; it never moves to another one by itself.
 - Private starts are serialised across processes by a lock file and quit what they started if they can't identify it.
-- A call that stops making progress (window not responding, or no CPU across Inventor and its solver) is warned about
-  after 2 minutes and given up on after 10 (`INVENTOR_FORGE_HANG_WARN`, `INVENTOR_FORGE_HANG_STOP`).
-- "Busy" refusals are retried by a COM message filter; the same call failing the same way twice is not sent again.
+- A call that stops making progress (the window is not responding, or Inventor and its solver use no processor time)
+  produces a warning after 2 minutes and is abandoned after 10 (`INVENTOR_FORGE_HANG_WARN`, `INVENTOR_FORGE_HANG_STOP`).
+- A Stress Analysis solve is stopped, rather than left to reach its time limit, when Inventor and its solver processes
+  use under 1 % of a core for 15 minutes or Inventor stops responding for 10 minutes (`INVENTOR_FORGE_STALL_S`,
+  `INVENTOR_FORGE_HUNG_S`). The solver processes are ended; a hung Inventor is closed only if the session started it.
+- "Busy" refusals are retried by a COM message filter; a call that fails the same way twice is not sent again.
 - Long calls keep the PC awake; at most two solves run at once (`INVENTOR_FORGE_MAX_SOLVES`).
 - `connect` checks the active project (`expect_project` / `INVENTOR_FORGE_PROJECT`), unsaved documents and disk space.
 
-## How the harder parts work
+## Implementation notes
 
-- **Stress and modal analysis in Inventor's own Stress Analysis.** That environment has no automation
-  API (its add-in exposes nothing, and its bundled solver only runs inside Inventor), so
-  `analyze_stress` / `analyze_modes` drive it the way a person would, **taking over the mouse and
-  keyboard for ~30 s**:
+- **Stress and modal analysis.** Inventor's Stress Analysis environment has no automation API (its add-in exposes no
+  objects, and its solver runs only inside Inventor), so `analyze_stress` and `analyze_modes` operate it through the
+  user interface, **taking control of the mouse and keyboard for about 30 seconds**:
   - commands (Create Study, Fixed Constraint, Force, Pressure, Gravity, Mesh Settings, Simulate, Report)
     are started through the API;
-  - each face — chosen by the same index as `list_faces` — is picked with a real click: the camera is
-    turned to look straight at an interior point of the face, the tool waits for the screen to redraw,
-    clicks the centre of the viewport, and confirms on screen that the face turned to the selection colour
-    (a click that only activated Inventor's window is detected and repeated);
+  - each face, identified by the same index as `list_faces`, is selected with a real click: the camera is turned to
+    look directly at an interior point of the face, the tool waits for the view to redraw, clicks the centre of the
+    viewport, and confirms on screen that the face has changed to the selection colour (a click that only activated
+    Inventor's window is detected and repeated);
   - values are typed into Inventor's value boxes with the keyboard; plain fields and buttons are set with
     window messages;
-  - every click is checked to land on Inventor's viewport/dialog first — if anything covers it, the run
-    stops instead of clicking elsewhere;
-  - results come from Inventor's own report (parsed for the study just run): von Mises and principal
-    stresses, displacement, safety factor, reactions — with an **equilibrium check** and a **reaction-moment
-    check** that catches a pick that went to the wrong face — plus a picture of Inventor's stress plot.
+  - every click is first checked to land on Inventor's viewport or dialog; if anything covers it, the run stops
+    rather than clicking elsewhere;
+  - results are read from Inventor's report for the study just run: von Mises and principal stresses, displacement,
+    safety factor and reactions, with an **equilibrium check** and a **reaction-moment check** that detects a selection
+    on the wrong face, plus an image of Inventor's stress plot.
   Use `mesh_fraction` (0.04–0.05) for a second, finer run to check convergence.
-- **Drawing QA that looks at what matters:** views overlapping each other, the title block or the
+- **Drawing QA.** The check reports views overlapping each other, the title block or the
   border; parts lists, hole tables and revision tables overlapping things or running off the sheet; dimension
   text off the sheet, on the title block or overlapping other dimension text; hole notes sitting on a view;
   overall sizes with no dimension (a bore of the same size doesn't count as a height); views without
   dimensions; missing labels; empty title-block fields; assemblies without a parts list or with unballooned
   items. Ends with `TOTAL ISSUES: N`.
-- **One-shot sheets dimension round parts properly:** equal holes get one grouped callout (`6× Ø14 THRU ON
+- **Dimensioning of round parts.** On one-call sheets, equal holes get one grouped callout (`6× Ø14 THRU ON
   Ø110 PCD`, with counterbores), concentric sizes get diameters, steps and overall sizes are added, and a
   neighbouring view slides over if a callout needs the room.
-- **Exports never hang:** translators run in Inventor's silent mode, and a watchdog cancels any options
-  dialog that still appears and reports it, so an unattended session can't get stuck.
-- **Layout that respects the title block** and reserves space for dimensions, with the projection
-  angle taken from the standard.
-- **Materials with real numbers** (E, ν, density, yield, UTS from Inventor's asset library, units
-  normalised), mass properties with inertia, interference volumes, BOM export, flat-pattern DXF.
-- **Screenshots and sheet renders are returned as images** in the MCP result, so the model can look at
-  its own work.
+- **Unattended exports.** Translators run in Inventor's silent mode, and a watchdog cancels and reports any options
+  dialog that still appears, so an unattended session cannot be blocked.
+- **Sheet layout.** Views are placed clear of the title block with space reserved for dimensions, and the projection
+  angle follows the selected standard.
+- **Material data.** E, ν, density, yield and ultimate strength are read from Inventor's asset library with units
+  normalised; mass properties include inertia.
+- **Images in results.** Screenshots and sheet renders are returned as images in the MCP result, so the model can
+  review its own work.
 
-## Verified
+## Validation
 
-`tests/` — run with `python -m pytest tests/test_offline.py` (no Inventor needed) and the live `smoke_*.py`
-scripts, which exercise the tools against real Inventor with hand-calculated checks (the ones that call
-`analyze_stress` or `analyze_modes`, such as `smoke_fea.py`, `smoke_fea2.py` and `smoke_full.py`, take over the mouse
-and keyboard while they run):
+The offline tests in `tests/` run without Inventor (`python -m pytest tests`). The live `smoke_*.py` and `live_*.py`
+scripts exercise the tools against Inventor with hand-calculated checks; those that call `analyze_stress` or
+`analyze_modes` (such as `smoke_fea.py`, `smoke_fea2.py` and `smoke_full.py`) take control of the mouse and keyboard
+while they run.
 
 | Check | Result |
 |---|---|
@@ -228,10 +233,10 @@ and keyboard while they run):
 
 ## Licence
 
-MIT — see [LICENSE](LICENSE). Autodesk and Inventor are trademarks of Autodesk, Inc.; this project is
+MIT; see [LICENSE](LICENSE). Autodesk and Inventor are trademarks of Autodesk, Inc.; this project is
 not affiliated with or endorsed by Autodesk.
 
-## Switches (environment variables)
+## Environment variables
 
 | Variable | Effect |
 |---|---|
@@ -244,6 +249,8 @@ not affiliated with or endorsed by Autodesk.
 | `INVENTOR_FORGE_PRIVATE=1` | Start a separate Inventor for the session instead of attaching to one the user has open (`connect(private=false)` attaches on request). |
 | `INVENTOR_FORGE_MAX_SOLVES=2` | Solves allowed at once on the PC. |
 | `INVENTOR_FORGE_MIN_FREE_GB=6` | Free memory a solve needs to start beside others. |
+| `INVENTOR_FORGE_STALL_S=900` | Seconds of near-zero processor use after which a solve is stopped as stalled. |
+| `INVENTOR_FORGE_HUNG_S=600` | Seconds Inventor may stop responding during a solve before the solve is stopped. |
 
-Each tool's `_meta["cad/files"]` in `tools/list` says which arguments it writes or reads, for clients that sandbox
+Each tool's `_meta["cad/files"]` in `tools/list` states which arguments it writes or reads, for clients that restrict
 file access (also published as `inventor-forge/files`).

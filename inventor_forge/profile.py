@@ -37,7 +37,7 @@ GEOMETRY = {
     "parametric_extrusion", "split_faces", "link_parameters", "activate_model_state", "set_component_model_state",
     "sheet_metal_face", "flange", "sheet_metal_cut", "set_sheet_metal_thickness", "place_component",
     "add_constraint", "move_component", "pattern_component", "frame_members", "tube_frame", "create_material",
-    "set_appearance", "repair_import", "batch", "pose_bodies", "copy_assembly", "weld_body",
+    "set_appearance", "repair_import", "batch", "pose_bodies", "copy_assembly", "weld_body", "replace_reference",
 }
 
 # tools that delete something that can't be brought back when an argument says so (the client asks the user first)

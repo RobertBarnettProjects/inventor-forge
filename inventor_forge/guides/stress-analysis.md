@@ -46,6 +46,13 @@
 - A finished solve can leave stacked "Cancel study?" prompts that stop Inventor responding. Close the Simulate
   dialog as soon as the study reports finished.
 - A solve that ends in an error leaves no Results node; check before reading results.
+- A stalled solve is stopped, not waited out: when Inventor and its solver processes (FEAComputeServer, WizStress)
+  use no processor time for 15 min, or Inventor stops responding to Windows for 10 min, the solver processes are
+  ended and the call fails with the reason (`INVENTOR_FORGE_STALL_S`, `INVENTOR_FORGE_HUNG_S`). A hung private
+  Inventor is closed too; the user's own Inventor is left for them. A long solve that is still using processor time
+  is never stopped before its `timeout`.
+- `solve_state` shows each Inventor's solver processes, their processor time and whether Inventor is responding:
+  call it twice a few seconds apart to see if a solve is working.
 
 ## Reading results
 - The colour bar's maximum is the true peak only while "Maximum" is automatic.

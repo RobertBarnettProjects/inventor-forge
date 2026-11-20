@@ -24,6 +24,7 @@ from .. import uidrive as U
 from ..com import InventorError, K, items, r, safe, typed_call, plain_name
 from ..registry import tool
 from ..session import Session
+from ..stall import SolveWatch, sample as stall_sample
 from .inspect import face_centroid, face_normal, find_planar_face
 
 FEA_ENV = "FEA Environment Internal Name"
@@ -904,9 +905,16 @@ def _simulate(s: Session, pid: int, timeout: float = 3600.0, front: bool = True)
     U.click(U.find(h, cid=1))                          # Run
     warnings: list[str] = []
     finished_at = 0.0
+    watch, sampled = SolveWatch(), 0.0
     while True:
         if pid not in U.pids_named("Inventor.exe"):
             raise InventorError("Inventor closed during the solve; nothing from this run was stored")
+        if time.time() - sampled >= 5.0:
+            sampled = time.time()
+            cpu, hung, solvers = stall_sample(pid)
+            why = watch.update(sampled, cpu, hung, len(solvers))
+            if why:
+                _stalled(s, pid, why, solvers, hung)
         s.progress = f"solving, {time.time() - t0:.0f} s" + (f" ({s.progress_case})" if getattr(s, "progress_case", "") else "")
         open_ = [w for w, cls, title in U.window_rows(pid) if cls == "#32770" and title == "Simulate"]
         if not open_:
@@ -938,6 +946,22 @@ def _simulate(s: Session, pid: int, timeout: float = 3600.0, front: bool = True)
                             ". Only the solver finds these (meshing alone passes); look for slivers, tiny faces or "
                             "near-tangent contacts, or change the element size")
     return time.time() - t0, warnings
+
+
+def _stalled(s: Session, pid: int, why: str, solvers: list[tuple[int, str]], hung: bool) -> None:
+    """End a stalled solve: its solver processes, and this session's own Inventor when that is what hung (never an
+    Inventor the user opened). Always raises."""
+    ended = U.end_solvers([p for p, _exe in solvers])
+    msg = (f"the solve stalled: {why}, so it was stopped instead of waiting out the time limit"
+           + (f" (ended {ended} solver process(es))" if ended else "") + ". Nothing from this run was stored. ")
+    if hung and getattr(s, "private", False) and getattr(s, "pid", None) == pid:
+        U.end_solvers([pid])
+        msg += ("This session's own Inventor had stopped responding and was closed; connect(private=true) starts "
+                "another (run_study_cases does this by itself). ")
+    elif hung:
+        msg += "Inventor is not responding; it is the user's Inventor, so it was left for them to close. "
+    raise InventorError(msg + "Usual causes: a contact or mesh the solver can't settle, or the PC out of memory "
+                        "(solve_state shows memory); INVENTOR_FORGE_STALL_S / INVENTOR_FORGE_HUNG_S set the limits")
 
 
 FATAL_SOLVE = ("degenerate element", "negative jacobian", "distorted element")

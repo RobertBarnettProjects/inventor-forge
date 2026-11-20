@@ -19,6 +19,7 @@ from .. import uidrive as U
 from ..com import InventorError, K, items, plain_name, r, safe
 from ..registry import tool
 from ..session import Session
+from ..stall import inventor_hung, solver_processes
 from .fea import (_answer_results_prompt, _enter_analysis, _pid, _report, _run_command, _set_value, _simulate,
                   parse_report)
 
@@ -961,8 +962,12 @@ def solve_state(s: Session) -> dict:
     for pid in U.pids_named("Inventor.exe"):
         rows = U.window_rows(pid)
         out.append({"process": pid, **U.process_stats(pid), "solving": U.solver_windows([pid]),
+                    "not_responding": safe(lambda pid=pid: inventor_hung(pid), None),
+                    "solver_processes": [{"process": p, "exe": exe, **safe(lambda p=p: U.process_stats(p), {})}
+                                         for p, exe in safe(lambda pid=pid: solver_processes(pid), [])],
                     "windows": [f"{title} [{cls}]" for _h, cls, title in rows if title][:12]})
-    solver = [{"process": p, **U.process_stats(p)} for p in U.pids_named("FEAComputeServer.exe")]
+    solver = [{"process": p, **U.process_stats(p)} for exe in ("FEAComputeServer.exe", "WizStress.exe")
+              for p in U.pids_named(exe)]
     return {"inventors": out, "solver_processes": solver, "this_session": s.pid}
 
 

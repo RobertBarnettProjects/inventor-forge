@@ -5,6 +5,7 @@ import contextlib
 import csv
 import math
 import os
+import time
 
 from ..com import CM3_TO_MM3, MM, InventorError, K, items, r, safe, typed_call
 from ..registry import tool
@@ -557,4 +558,195 @@ def copy_assembly(s: Session, folder: str, prefix: str = "", old_prefix: str = "
     if not out["verified"]:
         out["warning"] = (out.get("warning", "") + "; " if out.get("warning") else "") + \
             "some references still lead to the source folder or are missing; see still_linked_to_source"
+    return out
+
+
+# --------------------------------------------------------------------------- reference audit and repair
+def reference_status(path: str, resolved: str, missing: bool, disabled: bool = False, substituted: bool = False,
+                     location_different: bool = False, exists=os.path.exists) -> str:
+    """One reference's state. Inventor quietly loads a file it finds somewhere other than the stored path (through
+    the project's search paths), so a reference can work today and break when the model moves; that is
+    "found_elsewhere". "substituted" is a file with the right name but a different origin (Inventor's internal name
+    differs), which loads as if nothing was wrong."""
+    if missing:
+        return "missing"
+    if disabled:
+        return "disabled"
+    if substituted:
+        return "substituted"
+    if location_different or (resolved and _norm(resolved) != _norm(path)) or (path and not exists(path)):
+        return "found_elsewhere"
+    return "ok"
+
+
+def plan_repoints(refs: list[tuple[str, str]], old: str, new: str, exists=os.path.exists,
+                  isdir=os.path.isdir) -> tuple[list[tuple[str, str, str]], list[dict]]:
+    """Which references to point where. refs: [(referencing file, referenced path)].
+
+    old: a file path, a bare file name (matches that name in any folder), or a folder (every reference under it moves
+    to the same place under new). Returns ([(referencing file, old path, new path)], [skipped with the reason])."""
+    old_is_dir = isdir(old) or old.endswith(("\\", "/")) or isdir(new) and not os.path.splitext(old)[1]
+    bare = not old_is_dir and os.path.basename(old) == old
+    root = _norm(old).rstrip("\\/") + os.sep
+    plan, skipped = [], []
+    for src, ref in refs:
+        n = _norm(ref)
+        if old_is_dir:
+            if not n.startswith(root):
+                continue
+            target = os.path.join(os.path.abspath(new), os.path.relpath(os.path.abspath(ref), os.path.abspath(old)))
+        elif bare:
+            if os.path.basename(n) != os.path.normcase(old):
+                continue
+            target = os.path.abspath(new)
+        else:
+            if n != _norm(old):
+                continue
+            target = os.path.abspath(new)
+        if _norm(target) == n:
+            continue
+        if not exists(target):
+            skipped.append({"in": src, "reference": ref, "to": target, "reason": "the new file does not exist"})
+            continue
+        plan.append((src, ref, target))
+    return plan, skipped
+
+
+def _references(top) -> list[dict]:
+    """Every reference in the tree of a file, missing ones included, with what Inventor says about each."""
+    rows, done, todo = [], set(), [top]
+    while todo:
+        f = todo.pop()
+        fn = safe(lambda f=f: f.FullFileName, "")
+        if not fn or _norm(fn) in done:
+            continue
+        done.add(_norm(fn))
+        for fd in items(safe(lambda f=f: f.ReferencedFileDescriptors) or []):
+            path = safe(lambda fd=fd: fd.FullFileName, "") or ""
+            resolved = safe(lambda fd=fd: fd.ResolvedFullFileName, "") or ""
+            missing = bool(safe(lambda fd=fd: fd.ReferenceMissing, False))
+            rows.append({"in": fn, "path": path, "resolved": resolved, "relative": safe(lambda fd=fd: fd.RelativeFileName, ""),
+                         "status": reference_status(path, resolved, missing,
+                                                    bool(safe(lambda fd=fd: fd.ReferenceDisabled, False)),
+                                                    bool(safe(lambda fd=fd: fd.ReferenceInternalNameDifferent, False)),
+                                                    bool(safe(lambda fd=fd: fd.ReferenceLocationDifferent, False))),
+                         "_fd": fd})
+            if not missing:
+                rf = safe(lambda fd=fd: fd.ReferencedFile)
+                if rf is not None:
+                    todo.append(rf)
+    return rows
+
+
+@tool("assembly", mutates=False)
+def list_references(s: Session, only_problems: bool = True, root: str = "") -> dict:
+    """Audit the active document's file references (assembly, part or drawing), read from the files themselves so
+    parts used only in inactive model states are included. Each reference gets a status: ok; found_elsewhere (the
+    stored path doesn't exist or differs from where Inventor found the file through the project's search paths: works
+    here, breaks when the model moves or the project changes); substituted (same name, different file origin);
+    missing; disabled. Fix with replace_reference.
+
+    only_problems: list only references that aren't ok (the counts cover all)
+    root: also flag references outside this folder (e.g. the job or package folder); default: no such check
+    """
+    d = s.doc()
+    if not safe(lambda: d.FullFileName, ""):
+        raise InventorError("the document has never been saved, so it has no file references to audit")
+    rows = _references(d.File)
+    root_n = _norm(os.path.join(s.workdir, root) if root and not os.path.isabs(root) else root).rstrip("\\/") + os.sep \
+        if root else ""
+    counts: dict = {}
+    out_rows = []
+    for row in rows:
+        row.pop("_fd", None)
+        counts[row["status"]] = counts.get(row["status"], 0) + 1
+        if root_n:
+            row["outside_root"] = not _norm(row["resolved"] or row["path"]).startswith(root_n)
+            counts["outside_root"] = counts.get("outside_root", 0) + row["outside_root"]
+        if not only_problems or row["status"] != "ok" or row.get("outside_root"):
+            if row["resolved"] and _norm(row["resolved"]) == _norm(row["path"]):
+                row.pop("resolved")
+            out_rows.append(row)
+    return {"document": d.FullFileName, "references": len(rows), "counts": counts, "rows": out_rows[:200],
+            **({"truncated": len(out_rows)} if len(out_rows) > 200 else {}),
+            "healthy": all(r_["status"] == "ok" for r_ in rows) and not counts.get("outside_root")}
+
+
+@tool("assembly")
+def replace_reference(s: Session, old: str, new: str, dry_run: bool = False) -> dict:
+    """Point references in the active document's tree at a different file, then save and check them from disk.
+    Backs up every file it changes into the job folder first (reference_backups\\<time>). The new file must be the
+    same design (a copy or a renamed/moved version of the old one): Inventor refuses a file of different origin.
+    Saves the changed files in place, so the document and its parts must have no unsaved changes.
+
+    old: the referenced file's path; a bare file name (that name wherever it is referenced from); or a folder, to move
+      every reference under it to the same relative place under new
+    new: the replacement file, or folder when old is a folder
+    dry_run: only list what would change
+    """
+    import shutil
+
+    from ..writes import guard
+    from .docs import _guard_dependents
+    d = s.doc()
+    top_file = safe(lambda: d.FullFileName, "")
+    if not top_file:
+        raise InventorError("save the document first; references are read from its file")
+    if not dry_run and (safe(lambda: d.Dirty, False) or
+                        any(safe(lambda x=x: x.Dirty, False) for x in items(d.AllReferencedDocuments))):
+        raise InventorError("the document or one of its files has unsaved changes; save (or undo) them first, since "
+                            "repointing saves the files it changes")
+    new_abs = os.path.abspath(os.path.join(s.workdir, new) if not os.path.isabs(new) else new)
+    rows = _references(d.File)
+    if os.path.basename(old.rstrip("\\/")) != old and not os.path.isabs(old):
+        old = os.path.join(s.workdir, old)          # a relative path, like new; a bare file name stays a name
+    plan, skipped = plan_repoints([(r_["in"], r_["path"]) for r_ in rows], old, new_abs)
+    changes = [{"in": os.path.basename(a), "from": b, "to": c} for a, b, c in plan]
+    if not plan:
+        return {"replaced": 0, "skipped": skipped[:20], "note": f"no reference matches {old!r}"}
+    if dry_run:
+        return {"would_replace": len(plan), "changes": changes[:50], "skipped": skipped[:20]}
+    backup = os.path.join(s.workdir, "reference_backups", time.strftime("%Y%m%d-%H%M%S"))
+    backed = []
+    for src in sorted({a for a, _b, _c in plan} | {top_file}, key=_norm):
+        dst = os.path.join(backup, os.path.basename(src))
+        guard(dst, "back up to")
+        guard(src, "save")
+        os.makedirs(backup, exist_ok=True)
+        shutil.copy2(src, dst)
+        backed.append(dst)
+    wanted = {(_norm(a), _norm(b)): c for a, b, c in plan}
+    failed, done = [], 0
+    for row in rows:
+        target = wanted.get((_norm(row["in"]), _norm(row["path"])))
+        if not target:
+            continue
+        try:
+            row["_fd"].ReplaceReference(target)
+            done += 1
+        except Exception as e:  # noqa: BLE001
+            failed.append({"in": os.path.basename(row["in"]), "to": target,
+                           "error": str(e)[:200] + " (Inventor accepts only a copy of the same design)"})
+    safe(lambda: d.Update())
+    guard(top_file, "save")
+    _guard_dependents(d)                     # Save2(True) also writes every changed document it uses
+    from .docs import _silent
+    with _silent(s):
+        try:
+            d.Save2(True)
+        except Exception:  # noqa: BLE001
+            d.Save()
+    after = _references(d.File)
+    old_paths = {_norm(b) for _a, b, _c in plan}
+    still = [{"in": os.path.basename(r_["in"]), "to": r_["path"]} for r_ in after if _norm(r_["path"]) in old_paths]
+    problems = [{"in": os.path.basename(r_["in"]), "path": r_["path"], "status": r_["status"]} for r_ in after
+                if r_["status"] in ("missing", "substituted")]
+    out = {"replaced": done, "changes": changes[:50], "backups": backup, "backed_up": len(backed),
+           "still_pointing_at_old": still[:20], "verified": not still and not failed and not problems}
+    if failed:
+        out["failures"] = failed[:20]
+    if skipped:
+        out["skipped"] = skipped[:20]
+    if problems:
+        out["problems_after"] = problems[:20]
     return out

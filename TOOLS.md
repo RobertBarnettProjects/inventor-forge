@@ -1,6 +1,6 @@
 # inventor-forge tools
 
-205 tools. Lengths mm, angles degrees, forces N, stresses MPa.
+207 tools. Lengths mm, angles degrees, forces N, stresses MPa.
 
 ## Session
 
@@ -178,6 +178,8 @@
 | `pattern_component` | Circular (angle = degrees between copies) or linear (linear=true, spacing in mm) pattern of components along an assembly origin axis X/Y/Z. | `occurrences`*, `axis`, `count`, `angle`, `linear`, `spacing` |
 | `sweep_clearance` | Drive an angle or offset constraint through a range and, at every step, check for clashes and the smallest gap between the moving component and the rest: hinges, levers, steering, sliders. The constraint is put back to where it was afterwards. Gives the first value where parts collide and the tightest clearance. | `constraint`*, `start`*, `stop`*, `steps`, `moving`, `against` |
 | `copy_assembly` | Copy the active (saved) assembly and every file it uses from its own folder tree into a new folder, renaming the files with a prefix, then point every reference in the copies at the copied files and check that none still leads back. References are read from the files themselves, so parts used only in model states that aren't active are copied and repointed too (Inventor's Save As leaves those linked to the originals without saying so). Files outside the source folder (library and Content Center parts) stay shared. Stress Analysis results files are not copied: solve the copies again. Contact types are compared before and after the repoint, because a replaced reference can drop contacts that automatic contacts then recreate as Bonded. The source assembly is closed first (it must have no unsaved changes) and the copy is left open. | `folder`*, `prefix`, `old_prefix`, `source_root`, `check_contacts` |
+| `list_references` | Audit the active document's file references (assembly, part or drawing), read from the files themselves so parts used only in inactive model states are included. Each reference gets a status: ok; found_elsewhere (the stored path doesn't exist or differs from where Inventor found the file through the project's search paths: works here, breaks when the model moves or the project changes); substituted (same name, different file origin); missing; disabled. Fix with replace_reference. | `only_problems`, `root` |
+| `replace_reference` | Point references in the active document's tree at a different file, then save and check them from disk. Backs up every file it changes into the job folder first (reference_backups\<time>). The new file must be the same design (a copy or a renamed/moved version of the old one): Inventor refuses a file of different origin. Saves the changed files in place, so the document and its parts must have no unsaved changes. | `old`*, `new`*, `dry_run` |
 | `set_component_model_state` | Show a component in the assembly in one of its model states. | `occurrence`*, `state`* |
 
 ## Drawing

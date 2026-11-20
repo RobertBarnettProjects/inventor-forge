@@ -20,7 +20,7 @@
   prefix.
 - Verify from the saved files' `ReferencedFileDescriptors`. `AllReferencedDocuments` lists loaded documents only.
   The descriptors also list the Stress Analysis set-up files (`AIP\FEA`), and a copied model can still point at its
-  source's: check for missing references (`referenced_files`) before moving any folder.
+  source's: check for missing references (`list_references`) before moving any folder.
 - Walking `File.AllReferencedFiles` has crashed Inventor; use the open documents and the top file's descriptors.
 - `os.path.normcase` lower-cases paths: compare with it, but copy and save with the real path.
 - Never rename or move a folder other copies may still link to: their studies fail with "Invalid constraint".
@@ -28,6 +28,16 @@
   compares contact types before and after; set them again if they changed.
 - Component names inside the copy keep the original names (`K1_Post:1`); only the files are renamed.
 - Prune studies before copying (`purge_studies`): each study's mesh and results are copied with the model.
+
+## Checking and repairing references
+- Inventor quietly finds a moved file through the project's search paths, so a model can open fine here and break
+  on another PC or under another project. `list_references` reads every reference from the files (inactive model
+  states and Stress Analysis set-up files included) and marks each ok, found_elsewhere, substituted (same name,
+  different design), missing or disabled; `root` also flags references outside a folder (before packaging).
+- `replace_reference` repoints one file, a file name wherever it is used, or a whole folder to a new folder. It
+  backs up every file it changes into a reference_backups folder in the job folder, saves, and reads the references back.
+  Run it with `dry_run=true` first. Inventor only accepts a copy of the same design as the new file.
+- Repointing can change Stress Analysis contacts as `copy_assembly` notes: list contacts before and after.
 
 ## Saving
 - `save_document(list_only=true)` shows every document a save would write. A path equal to the document's own file
